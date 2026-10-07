@@ -1,4 +1,4 @@
-﻿# SUMI Guard
+# SUMI Guard
 
 SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
 評価するためのローカル監視試作です。
@@ -34,6 +34,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `tools/Show-SumiGuardRecords.ReadOnly.ps1`: ReadOnly派生モジュールを明示使用するCLI
 - `demo/Show-SumiGuardDemo.ReadOnly.ps1`: ReadOnly CLIを使うデモ表示
 - `tests/Invoke-ReadOnlyCliTests.ps1`: 読み取り専用CLIの合成データ試験
+- `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1`: 無害な子プロセス8ケースで、出力の捕捉・JSON読取り・事後照合の分岐と理由を判定する合成試験
 - `docs/19-sumi-guard-execution-audit.md`: 設計書
 - `docs/20-local-store.md`: 保存形式、容量、保持、制約
 - `docs/21-execution-localstore-adapter.md`: 接続API、状態、失敗時の扱い

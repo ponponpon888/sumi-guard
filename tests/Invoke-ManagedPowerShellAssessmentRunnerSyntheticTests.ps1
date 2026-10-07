@@ -1,5 +1,5 @@
 [CmdletBinding()]
-param([switch]$ConfirmReal,[switch]$RunSyntheticTests,[string]$TargetPath='C:\Dev\sumi-guard\demo\Invoke-SumiGuardManagedPowerShellAssessmentDemo.ps1',[string]$DemoDataPath='C:\Dev\sumi-guard\.demo-data')
+param([switch]$ConfirmReal,[switch]$RunSyntheticTests,[string]$TargetPath=(Join-Path (Split-Path -Parent $PSScriptRoot) 'demo\Invoke-SumiGuardManagedPowerShellAssessmentDemo.ps1'),[string]$DemoDataPath=(Join-Path (Split-Path -Parent $PSScriptRoot) '.demo-data'))
 Set-StrictMode -Version Latest
 $ErrorActionPreference='Stop';$script:TargetStartCount=0
 function Get-FixedDiagnostic([string]$Stage,[Exception]$Exception){[pscustomobject]@{stage=$Stage;exception_type=$Exception.GetType().FullName;hresult=('0x{0:X8}' -f ($Exception.HResult -band 0xffffffff))}}
