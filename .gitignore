@@ -1,0 +1,48 @@
+# Runtime logs and generated event data
+logs/
+runtime/
+var/
+.demo-data/
+*.log
+*.ndjson
+
+# SUMI Guard encrypted local body stores
+*.sgb
+.sumi-guard-store.json
+.sumi-guard-store.lock
+.sumi-guard-execution-store.json
+.sumi-guard-execution-store.lock
+.sumi-guard-hook-metadata.lock
+
+# Local databases and SQLite sidecars
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+
+# Secrets and local credentials
+.env
+.env.*
+!.env.example
+secrets/
+credentials*.json
+tokens*.json
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Temporary and editor files
+tmp/
+temp/
+.tmp/
+*.tmp
+*.temp
+*.bak
+*.swp
+~$*
