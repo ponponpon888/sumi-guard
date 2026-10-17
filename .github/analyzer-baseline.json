@@ -1,8 +1,8 @@
 {
   "comment": "Per-rule PSScriptAnalyzer counts the repository currently carries. The check fails when a rule goes above its number here, or when a rule absent from this file appears. Lowering a number is the point: fix findings, then lower it in the same commit.",
   "measured_from": {
-    "commit": "506faeb",
-    "run": "https://github.com/ponponpon888/sumi-guard/actions/runs/39023120599",
+    "commit": "64ddf6b",
+    "run": "https://github.com/ponponpon888/sumi-guard/actions/runs/39023376398",
     "analyzer_version": "1.25.0",
     "powershell_version": "5.1.26100.33438"
   },
@@ -11,12 +11,13 @@
     "Warning/PSUseShouldProcessForStateChangingFunctions": 36,
     "Information/PSProvideCommentHelp": 19,
     "Warning/PSUseSingularNouns": 16,
-    "Warning/PSAvoidAssignmentToAutomaticVariable": 14,
+    "Warning/PSAvoidAssignmentToAutomaticVariable": 12,
     "Warning/PSReviewUnusedParameter": 9,
-    "Warning/PSAvoidUsingWriteHost": 9,
+    "Warning/PSAvoidUsingWriteHost": 12,
     "Warning/PSAvoidUsingEmptyCatchBlock": 8,
     "Warning/PSUseDeclaredVarsMoreThanAssignments": 5,
     "Warning/PSAvoidUsingCmdletAliases": 1,
     "Warning/PSUseApprovedVerbs": 1
-  }
+  },
+  "note_write_host": "12 is the measured count before the SuppressMessageAttribute was added to the three .github/scripts files, all 12 findings being in those scripts. If the attribute takes effect the next run reports BELOW_BASELINE, and this number is then lowered to the measured value."
 }

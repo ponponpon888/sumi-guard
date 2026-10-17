@@ -1,4 +1,8 @@
 ﻿[CmdletBinding()]
+[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+    'PSAvoidUsingWriteHost',
+    '',
+    Justification = 'Human-readable lines belong in the CI log only. Standard output carries this script''s JSON summary, so sending them to the output stream would mix two formats in one stream.')]
 param(
     [string]$RepositoryRoot,
 
