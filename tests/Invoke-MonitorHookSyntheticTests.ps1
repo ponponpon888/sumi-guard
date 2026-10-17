@@ -42,6 +42,24 @@ function Add-Result {
     $results.Add([pscustomobject]$row)
 }
 
+# Reads one field of the object Invoke-Hook returned. It tolerates $null and a
+# collection: under Set-StrictMode 2.0 a property access on either aborts the
+# whole test, and the shape of the value is itself worth reporting.
+function Get-RunField {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Run,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Run) { return $null }
+
+    $first = @($Run)[0]
+    if ($null -eq $first) { return $null }
+    if (@($first.PSObject.Properties.Name) -notcontains $Name) { return $null }
+
+    return $first.$Name
+}
+
 # Reads one field of a hook result. A missing field returns $null instead of
 # throwing: under Set-StrictMode 2.0 a direct property access on an absent field
 # aborts the whole test, which costs a run and reports nothing about the case
@@ -52,10 +70,7 @@ function Get-DetailField {
         [Parameter(Mandatory = $true)][string]$Name
     )
 
-    if ($null -eq $Run) { return $null }
-    if (@($Run.PSObject.Properties.Name) -notcontains 'detail') { return $null }
-
-    $detail = $Run.detail
+    $detail = Get-RunField -Run $Run -Name 'detail'
     if ($null -eq $detail) { return $null }
     if (@($detail.PSObject.Properties.Name) -notcontains $Name) { return $null }
 
@@ -65,10 +80,15 @@ function Get-DetailField {
 function Get-ObservedDiagnostic {
     param([Parameter(Mandatory = $true)][AllowNull()]$Run)
 
-    if ($null -eq $Run -or
-        (@($Run.PSObject.Properties.Name) -notcontains 'detail') -or
-        $null -eq $Run.detail) {
-        return @{ detail_present = $false }
+    $runCount = 0
+    $runType = 'null'
+    if ($null -ne $Run) {
+        $runCount = @($Run).Count
+        $runType = $Run.GetType().FullName
+    }
+
+    if ($null -eq (Get-RunField -Run $Run -Name 'detail')) {
+        return @{ detail_present = $false; run_count = $runCount; run_type = $runType }
     }
 
     $ruleIds = @()
@@ -85,6 +105,8 @@ function Get-ObservedDiagnostic {
 
     return @{
         detail_present = $true
+        run_count = $runCount
+        run_type = $runType
         hook_status = [string](Get-DetailField -Run $Run -Name 'hook_status')
         assessment_status = [string](Get-DetailField -Run $Run -Name 'assessment_status')
         assessment_reason_code = $reasonCode
@@ -97,7 +119,7 @@ function Get-ObservedDiagnostic {
         notice_status = [string](Get-DetailField -Run $Run -Name 'notice_status')
         interpreter_verified = [bool](Get-DetailField -Run $Run -Name 'interpreter_verified')
         interpreter_reason_code = [string](Get-DetailField -Run $Run -Name 'interpreter_reason_code')
-        exit_code = $Run.exit_code
+        exit_code = (Get-RunField -Run $Run -Name 'exit_code')
     }
 }
 
@@ -205,16 +227,16 @@ function Invoke-Hook {
 function Test-MonitorOnlyResponse {
     param([Parameter(Mandatory = $true)]$Run)
 
-    if ($Run.exit_code -ne 0) { return $false }
+    if ((Get-RunField -Run $Run -Name 'exit_code') -ne 0) { return $false }
 
     $response = $null
-    try { $response = $Run.stdout_text | ConvertFrom-Json } catch { return $false }
+    try { $response = (Get-RunField -Run $Run -Name 'stdout_text') | ConvertFrom-Json } catch { return $false }
     if ($null -eq $response) { return $false }
 
     $names = @($response.PSObject.Properties.Name)
     if ($names.Count -ne 1 -or $names[0] -cne 'systemMessage') { return $false }
 
-    $lowered = $Run.stdout_text.ToLowerInvariant()
+    $lowered = ([string](Get-RunField -Run $Run -Name 'stdout_text')).ToLowerInvariant()
     foreach ($word in @('"deny"', 'permissiondecision', 'block')) {
         if ($lowered.Contains($word)) { return $false }
     }
@@ -254,7 +276,7 @@ try {
     Add-Result 'DETECTED_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $detected) -Observed $detectedDiagnostic
     $script:stage = 'add/DETECTED_RECORD_LINKED_TO_EXECUTION_ID'
     Add-Result 'DETECTED_RECORD_LINKED_TO_EXECUTION_ID' (
-        $detected.store_text.Contains([string](Get-DetailField -Run $detected -Name 'execution_id')) -and
+        ([string](Get-RunField -Run $detected -Name 'store_text')).Contains([string](Get-DetailField -Run $detected -Name 'execution_id')) -and
         [string](Get-DetailField -Run $detected -Name 'evaluation_origin') -ceq 'MANAGED_EXECUTION') -Observed $detectedDiagnostic
 
     # The same detection with a canary appended as a comment. A comment is not a
@@ -269,9 +291,9 @@ try {
         $canaryDiagnostic.findings_count -eq $detectedDiagnostic.findings_count) -Observed $canaryDiagnostic
     $script:stage = 'add/NO_CONTENT_LEAK'
     Add-Result 'NO_CONTENT_LEAK' (
-        (-not $canaryRun.stdout_text.Contains($canary)) -and
-        (-not $canaryRun.store_text.Contains($canary)) -and
-        (-not $canaryRun.notice_text.Contains($canary)) -and
+        (-not ([string](Get-RunField -Run $canaryRun -Name 'stdout_text')).Contains($canary)) -and
+        (-not ([string](Get-RunField -Run $canaryRun -Name 'store_text')).Contains($canary)) -and
+        (-not ([string](Get-RunField -Run $canaryRun -Name 'notice_text')).Contains($canary)) -and
         (-not ($canaryRun.detail | ConvertTo-Json -Depth 10 -Compress).Contains($canary))) -Observed $canaryDiagnostic
 
     # No trusted route: the interpreter is not guessed from the text.
@@ -305,7 +327,7 @@ try {
         [string](Get-DetailField -Run $invalid -Name 'assessment_storage_status') -ceq 'NOT_ATTEMPTED' -and
         [string](Get-DetailField -Run $invalid -Name 'intent_storage_status') -ceq 'NOT_ATTEMPTED' -and
         [string](Get-DetailField -Run $invalid -Name 'interpreter_reason_code') -ceq 'HOOK_INPUT_INVALID' -and
-        $invalid.store_text.Length -eq 0) -Observed (Get-ObservedDiagnostic -Run $invalid)
+        ([string](Get-RunField -Run $invalid -Name 'store_text')).Length -eq 0) -Observed (Get-ObservedDiagnostic -Run $invalid)
     $script:stage = 'add/INVALID_INPUT_IS_MONITOR_ONLY'
     Add-Result 'INVALID_INPUT_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $invalid)
 
@@ -316,7 +338,7 @@ try {
     $script:stage = 'add/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
     Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' (
         [string](Get-DetailField -Run $post -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
-        $post.store_text.Length -eq 0)
+        ([string](Get-RunField -Run $post -Name 'store_text')).Length -eq 0)
 
     # The design requires the intent save to happen even when evaluation fails,
     # and a record to exist for EVALUATION_FAILED.
@@ -342,7 +364,7 @@ try {
         [string](Get-DetailField -Run $intentFailed -Name 'assessment_storage_status') -ceq 'SAVED' -and
         (-not [bool](Get-DetailField -Run $intentFailed -Name 'body_store_reached')) -and
         [string](Get-DetailField -Run $intentFailed -Name 'notice_status') -ceq 'NOTICE_WRITTEN' -and
-        $intentFailed.notice_text.Contains('INTENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $intentFailed)
+        ([string](Get-RunField -Run $intentFailed -Name 'notice_text')).Contains('INTENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $intentFailed)
 
     $script:stage = 'assert/intent-threw'
     $intentThrew = Invoke-Hook -CaseName 'intent-threw' -TrustedRoute -IntentOutcome 'TEST_THROW' `
@@ -351,8 +373,8 @@ try {
     Add-Result 'INTENT_EXCEPTION_IS_NOT_A_SILENT_SUCCESS' (
         [string](Get-DetailField -Run $intentThrew -Name 'intent_storage_status') -ceq 'INTENT_STORE_FAILED' -and
         [string](Get-DetailField -Run $intentThrew -Name 'assessment_storage_status') -ceq 'SAVED' -and
-        $intentThrew.notice_text.Contains('INTENT_STORE_FAILED') -and
-        (-not $intentThrew.notice_text.Contains('Exception'))) -Observed (Get-ObservedDiagnostic -Run $intentThrew)
+        ([string](Get-RunField -Run $intentThrew -Name 'notice_text')).Contains('INTENT_STORE_FAILED') -and
+        (-not ([string](Get-RunField -Run $intentThrew -Name 'notice_text')).Contains('Exception'))) -Observed (Get-ObservedDiagnostic -Run $intentThrew)
 
     # A failed assessment save is reported and noticed, not rounded to saved.
     $script:stage = 'assert/assessment-save-failed'
@@ -363,7 +385,7 @@ try {
         [string](Get-DetailField -Run $saveFailed -Name 'assessment_status') -ceq 'DETECTED' -and
         [string](Get-DetailField -Run $saveFailed -Name 'assessment_storage_status') -cne 'SAVED' -and
         [string](Get-DetailField -Run $saveFailed -Name 'notice_status') -ceq 'NOTICE_WRITTEN' -and
-        $saveFailed.notice_text.Contains('ASSESSMENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $saveFailed)
+        ([string](Get-RunField -Run $saveFailed -Name 'notice_text')).Contains('ASSESSMENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $saveFailed)
     $script:stage = 'add/ASSESSMENT_SAVE_FAILURE_IS_MONITOR_ONLY'
     Add-Result 'ASSESSMENT_SAVE_FAILURE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $saveFailed)
 
