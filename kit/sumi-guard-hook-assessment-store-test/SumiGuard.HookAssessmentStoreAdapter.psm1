@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 
 $script:Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
-$script:Root = 'C:\Dev\sumi-guard'
+$script:Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:AssessmentManifest = Join-Path $script:Root 'src\SumiGuard.CommandAssessment\SumiGuard.CommandAssessment.psd1'
 $script:StoreManifest = Join-Path $script:Root 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1'
 

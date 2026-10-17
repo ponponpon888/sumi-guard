@@ -19,18 +19,20 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 # needs_empty_demo_data: the script snapshots a demo data directory before it
 #   starts. That directory is generated at demo time and is not in the
 #   repository, so the runner creates an empty one and passes its path.
+# success_property: the property its JSON summary reports the overall result
+#   in. Most use 'success'; the synthetic runner uses 'synthetic_all_passed'.
 $includedTests = @(
-    [pscustomobject]@{ name = 'Invoke-AssessmentStoreTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-CommandAssessmentHookIntegrationTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-CommandAssessmentTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-HookAssessmentStoreAdapterTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentStoreDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationConnectionTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1'; arguments = @('-RunSyntheticTests'); needs_empty_demo_data = $true },
-    [pscustomobject]@{ name = 'Invoke-PowerShellCommandCliTests.ps1'; arguments = @(); needs_empty_demo_data = $false },
-    [pscustomobject]@{ name = 'Invoke-RealHookRunnerSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false }
+    [pscustomobject]@{ name = 'Invoke-AssessmentStoreTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-CommandAssessmentHookIntegrationTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-CommandAssessmentTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-HookAssessmentStoreAdapterTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentStoreDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationConnectionTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1'; arguments = @('-RunSyntheticTests'); needs_empty_demo_data = $true; success_property = 'synthetic_all_passed' },
+    [pscustomobject]@{ name = 'Invoke-PowerShellCommandCliTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-RealHookRunnerSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' }
 )
 
 # Test scripts this runner does not execute, with the reason. A passing run of
@@ -87,6 +89,42 @@ function Get-SumiGuardTestSummary {
     return $null
 }
 
+# Pull the stage and exception a failing test reported, when it reported one.
+function Get-SumiGuardTestDiagnostic {
+    param($Summary)
+
+    if ($null -eq $Summary) {
+        return ''
+    }
+
+    $parts = New-Object System.Collections.Generic.List[string]
+    $names = $Summary.PSObject.Properties.Name
+    foreach ($field in @('failure_stage', 'failure_exception_type', 'failed_cases')) {
+        if ($names -contains $field) {
+            $value = $Summary.$field
+            if ($null -ne $value -and "$value" -ne '') {
+                $parts.Add(("{0}={1}" -f $field, (@($value) -join ',')))
+            }
+        }
+    }
+
+    if ($names -contains 'setup_diagnostic' -and $null -ne $Summary.setup_diagnostic) {
+        $setup = $Summary.setup_diagnostic
+        $setupNames = $setup.PSObject.Properties.Name
+        foreach ($field in @('stage', 'exception_type')) {
+            if ($setupNames -contains $field) {
+                $parts.Add(("setup_{0}={1}" -f $field, $setup.$field))
+            }
+        }
+    }
+
+    if ($parts.Count -eq 0) {
+        return ''
+    }
+
+    return (' [' + ($parts -join ' ') + ']')
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 $failures = New-Object System.Collections.Generic.List[string]
 $temporaryDirectories = New-Object System.Collections.Generic.List[string]
@@ -141,14 +179,19 @@ try {
         Write-Host $text
 
         $summary = Get-SumiGuardTestSummary -Text $text
+        $successProperty = $test.success_property
         $reportedSuccess = $null
         $summaryHasSuccess = $false
         if ($null -ne $summary) {
-            $summaryHasSuccess = $summary.PSObject.Properties.Name -contains 'success'
+            $summaryHasSuccess = $summary.PSObject.Properties.Name -contains $successProperty
             if ($summaryHasSuccess) {
-                $reportedSuccess = [bool]$summary.success
+                $reportedSuccess = [bool]$summary.$successProperty
             }
         }
+
+        # Carry whatever stage the test itself named into the failure line, so
+        # the job summary explains a failure without opening the raw log.
+        $diagnostic = Get-SumiGuardTestDiagnostic -Summary $summary
 
         $results.Add([pscustomobject][ordered]@{
             name = $name
@@ -158,15 +201,15 @@ try {
         })
 
         if ($exitCode -ne 0) {
-            $failures.Add("NONZERO_EXIT: $name exited with $exitCode")
+            $failures.Add("NONZERO_EXIT: $name exited with $exitCode$diagnostic")
         } elseif ($null -eq $summary) {
             $failures.Add("SUMMARY_UNPARSED: $name exited 0 but no JSON summary could be read from its output")
         } elseif (-not $summaryHasSuccess) {
             # An idle or dry mode ends here: exit 0 with a summary that reports
             # no result. Treating it as a pass would hide a test that ran nothing.
-            $failures.Add("NO_SUCCESS_FIELD: $name exited 0 but its summary has no success field, so no case was judged")
+            $failures.Add("NO_SUCCESS_FIELD: $name exited 0 but its summary has no $successProperty field, so no case was judged")
         } elseif (-not $reportedSuccess) {
-            $failures.Add("SUMMARY_FAILURE: $name exited 0 but reported success=false")
+            $failures.Add("SUMMARY_FAILURE: $name exited 0 but reported $successProperty=false$diagnostic")
         }
     }
 } finally {

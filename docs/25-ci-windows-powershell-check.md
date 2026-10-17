@@ -63,7 +63,7 @@
 - `NONZERO_EXIT`: 試験が非0で終了した。
 - `SUMMARY_UNPARSED`: 終了コード0だがJSON要約を読めなかった。要約を出さない変更の検出を意図する。
 - `SUMMARY_FAILURE`: 終了コード0だが要約が `success=false` を報告した。
-- `NO_SUCCESS_FIELD`: 終了コード0だが要約に `success` が無い。1件も判定していない実行（idle、dry）を成功と数えないための失敗である。
+- `NO_SUCCESS_FIELD`: 終了コード0だが要約に、その試験の `success_property` が無い。1件も判定していない実行（idle、dry）を成功と数えないための失敗である。
 - `UNCLASSIFIED_TEST`: 実行一覧・除外一覧のどちらにも無い試験ファイルがある。
 - `MISSING_TEST`: 実行一覧にあるファイルが存在しない。
 
@@ -72,16 +72,22 @@
 初回実行（commit `1024cbd`）で、既存試験2件が GitHub ホストランナーで失敗した。どちらも
 CI側の不具合ではなく、作業端末の環境に依存していた箇所である。
 
-- `tests/Invoke-HookAssessmentStoreAdapterTests.ps1` は先頭でリポジトリ位置を
-  `C:\Dev\sumi-guard` と直書きしていた。`Import-Module` が
+- `tests/Invoke-HookAssessmentStoreAdapterTests.ps1` と
+  `kit/sumi-guard-hook-assessment-store-test/SumiGuard.HookAssessmentStoreAdapter.psm1` が、
+  リポジトリ位置を `C:\Dev\sumi-guard` と直書きしていた。`Import-Module` が
   `System.IO.FileNotFoundException` で失敗し、`failure_stage=INITIALIZATION` で終了コード1に
-  なった。他の試験と同じ `Split-Path -Parent $PSScriptRoot` に変更した。作業端末の配置が
-  `C:\Dev\sumi-guard` であれば解決結果は同じであり、試験内容は変えていない。
+  なった。両方を `$PSScriptRoot` からの相対解決に変更した。作業端末の配置が
+  `C:\Dev\sumi-guard` であれば解決結果は同じであり、試験内容と判定は変えていない。
+  試験ファイルだけ直した2回目の実行（`c8957df`）でも同じ失敗が残り、モジュール側の
+  直書きが分かった。
 - `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1` は、存在しない
   `.demo-data` を開始前スナップショットで走査し、`stage=pre_snapshot` の
   `MethodInvocationException` で終了コード2になった。あわせて `-RunSyntheticTests` を
   渡していなかったため、仮に通っていても8ケースは実行されていなかった。試験側は変更せず、
   ランナーが引数で対応する。
+- 同スクリプトの要約は全体の成否を `success` ではなく `synthetic_all_passed` で報告する。
+  2回目の実行では `NO_SUCCESS_FIELD` で失敗したため、実行一覧に `success_property` を
+  持たせ、試験ごとにどのプロパティを見るかを指定する形にした。
 
 `kit/sumi-guard-real-hook-assessment-check/Invoke-SumiGuardRealHookAssessmentCheck.ps1` にも
 同じ `C:\Dev\sumi-guard` の直書きが残っている。このスクリプトはCIの対象外（実フックとCodexを
