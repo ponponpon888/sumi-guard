@@ -117,12 +117,26 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 当初このPRでは「出力先の指定が効いていない可能性がある」と報告したが、呼び出し関係を確認して
 誤りと分かったため訂正した。
 
-#### 実際に手を入れる価値があるが、測定記録と対応するため判断が必要
+#### 確認後に直したもの
+
+| 箇所 | 確認した事実 | 対応 |
+|---|---|---|
+| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1` | `$bodySha256` を保存済み記録から読み出しているが、報告に入れていなかった。兄弟の `content_status`、`body_ref`、`body_reference_status` はいずれも入っている | 報告へ `body_sha256` を追加した。docs/19 が本文ハッシュを中核の記録項目としており、これが無いと報告だけでは同一本文かを比較できない。`command_sha256`（フック時点の本文ハッシュ）と並ぶため、保存された本文がフックで見た本文と一致するかを報告上で確認できる |
+| `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1` | 入口が `-EmitJapaneseDisplay $true` を渡していたが、関数は一度も読まない。表示は `$DisplayInvoker` または表示CLIで常に行われ、`success` の条件にも `$displayed` が入っている | パラメーターと入口の引数を削除した。表示を止められるスイッチにすると `success` が成立しなくなるため、このスイッチには一貫した意味がない。削除しても動作は変わらない |
+
+`sumi-guard-protected-hook.ps1` はCIで実行していない（実フックとCodexを必要とする）。CIが確認するのは
+構文と文字コードだけであり、**報告の形が変わったため
+`measurements/2026-10-03-protected-hook-integration-test.md` との対応は切れている**。運用端末での
+再実行と測定記録の更新が必要である。
+
+`demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1` は
+`tests/Invoke-ManagedAssessmentStoreDemoTests.ps1`（4判定）がCIで実行するため、削除の影響は
+CIで検証される。
+
+#### 体裁のため残すもの
 
 | 箇所 | 確認した事実 | 影響 |
 |---|---|---|
-| `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1:58` | 入口（177行）が `-EmitJapaneseDisplay` を渡しているが、関数は一度も読まない。日本語表示は `$DisplayInvoker` 側で行われる | 渡しても何も変わらないスイッチである。実装するか削除するかは仕様の判断。`measurements/2026-10-05-managed-assessment-store-demo.md` と対応する |
-| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1:250,257` | `$bodySha256` を記録から読み出しているが、報告（279〜282行）には入れていない。兄弟の `content_status`、`body_ref`、`body_reference_status` はいずれも報告に入っている | 本文ハッシュだけが報告から落ちている。docs/19 が本文ハッシュを中核の記録項目としているため、同一本文かの比較が報告からはできない。`measurements/2026-10-03-protected-hook-integration-test.md` と対応する |
 | `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 体裁の問題である。改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石 |
 
 #### 理由を付けて残すもの

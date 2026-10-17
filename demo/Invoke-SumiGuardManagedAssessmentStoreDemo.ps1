@@ -55,7 +55,6 @@ function Invoke-SumiGuardManagedAssessmentStoreDemo {
     param(
         [Parameter(Mandatory = $true)][bool]$RunRequested,
         [string]$AssessmentStorePath = '',
-        [bool]$EmitJapaneseDisplay = $false,
         [AllowNull()][scriptblock]$ManagedExecutionInvoker = $null,
         [AllowNull()][scriptblock]$DisplayInvoker = $null,
         [AllowNull()][scriptblock]$ReadbackInvoker = $null
@@ -174,7 +173,7 @@ function Invoke-SumiGuardManagedAssessmentStoreDemo {
 . $script:SumiGuardShowCli -StorePath ([IO.Path]::GetTempPath())
 
 if ($MyInvocation.InvocationName -cne '.') {
-    $report = Invoke-SumiGuardManagedAssessmentStoreDemo -RunRequested $script:SumiGuardRequestedRunFixedCommand -AssessmentStorePath $script:SumiGuardRequestedStorePath -EmitJapaneseDisplay $true
+    $report = Invoke-SumiGuardManagedAssessmentStoreDemo -RunRequested $script:SumiGuardRequestedRunFixedCommand -AssessmentStorePath $script:SumiGuardRequestedStorePath
     $report | ConvertTo-Json -Compress
     if ($report.success) { exit 0 }
     exit 1
