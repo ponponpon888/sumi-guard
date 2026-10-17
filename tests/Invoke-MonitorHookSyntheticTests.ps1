@@ -414,7 +414,7 @@ try {
             ($invalidAssessmentStorage -ceq 'NOT_ATTEMPTED') -and
             ($invalidIntentStorage -ceq 'NOT_ATTEMPTED') -and
             ($invalidInterpreterReason -ceq 'HOOK_INPUT_INVALID') -and
-            ($invalidStoreText.Length -eq 0)
+            ([string]::IsNullOrEmpty($invalidStoreText))
         $script:stage = 'add/INVALID_INPUT_STORES_NOTHING'
         Add-Result 'INVALID_INPUT_STORES_NOTHING' $invalidPass -Observed $invalidObserved
         $script:stage = 'add/INVALID_INPUT_IS_MONITOR_ONLY'
@@ -444,7 +444,7 @@ try {
         $postObserved = Get-ObservedDiagnostic -Run $post
         $script:stage = 'evaluate/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
         $postPass = ($postHookStatus -ceq 'INVALID_HOOK_INPUT') -and
-            ($postStoreText.Length -eq 0)
+            ([string]::IsNullOrEmpty($postStoreText))
         $script:stage = 'add/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
         Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' $postPass -Observed $postObserved
 
