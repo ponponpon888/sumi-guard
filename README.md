@@ -39,6 +39,11 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `docs/20-local-store.md`: 保存形式、容量、保持、制約
 - `docs/21-execution-localstore-adapter.md`: 接続API、状態、失敗時の扱い
 - `docs/22-read-only-cli.md`: 読み取り専用CLIの操作、状態、相関、制約
+- `.github/workflows/windows-powershell-5.1-check.yml`: Windows PowerShell 5.1 での構文・文字コード・静的解析・合成入力試験の継続的検査
+- `.github/scripts/Invoke-SumiGuardSyntaxCheck.ps1`: 全PowerShellファイルを実行せず構文解析し、非ASCIIのBOM欠落を検出する検査
+- `.github/scripts/Invoke-SumiGuardAnalyzerCheck.ps1`: PSScriptAnalyzer をError深刻度で失敗させる検査
+- `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
+- `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果
 - `measurements/2026-10-03-sumi-guard-final-code-correspondence.md`: 最終コードと測定結果の対応確認
 - `measurements/2026-10-03-local-store-module-tests.md`: 保存モジュールの単体試験結果
