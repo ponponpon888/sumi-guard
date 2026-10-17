@@ -2,7 +2,7 @@
 $ErrorActionPreference = 'Stop'
 
 $script:Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
-$script:Root = 'C:\Dev\sumi-guard'
+$script:Root = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $script:AssessmentManifest = Join-Path $script:Root 'src\SumiGuard.CommandAssessment\SumiGuard.CommandAssessment.psd1'
 $script:StoreManifest = Join-Path $script:Root 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1'
 
@@ -61,12 +61,12 @@ function Invoke-SumiGuardSyntheticPreToolUseAssessmentStore {
     try {
         Import-Module $script:AssessmentManifest -Force -ErrorAction Stop
         Import-Module $script:StoreManifest -Force -ErrorAction Stop
-        try { $input = $RawHookInputJson | ConvertFrom-Json -ErrorAction Stop } catch { $input = $null }
-        if (-not (Test-SumiGuardPreToolInput $input)) {
+        try { $hookInput = $RawHookInputJson | ConvertFrom-Json -ErrorAction Stop } catch { $hookInput = $null }
+        if (-not (Test-SumiGuardPreToolInput $hookInput)) {
             $Result.Value = New-SumiGuardHookStoreResult -AdapterStatus 'INVALID_HOOK_INPUT' -ExecutionId $null -Assessment $null -AssessmentStatus 'NOT_OBTAINED' -SaveStatus 'NOT_ATTEMPTED' -ResponseStatus 'GENERATED' -InterpreterVerified $false -InterpreterReason 'HOOK_INPUT_INVALID'
             return
         }
-        $executionId = Get-SumiGuardPreToolExecutionId $input
+        $executionId = Get-SumiGuardPreToolExecutionId $hookInput
         # Only this test-only parameter supplies trusted provenance. JSON fields, tool_name, and hook host do not.
         $verified = [bool]$SyntheticTrustedWindowsPowerShell
         $kind = if ($verified) { 'WINDOWS_POWERSHELL' } else { 'UNKNOWN' }
@@ -75,7 +75,7 @@ function Invoke-SumiGuardSyntheticPreToolUseAssessmentStore {
         $storeModule = (Get-Module -Name 'SumiGuard.AssessmentStore' -All | Select-Object -First 1)
         if ($TestForceEvaluationFailure) { $assessmentModule.SessionState.PSVariable.Set('SumiGuardTestForceEvaluationFailure', $true) }
         try {
-            $assessment = SumiGuard.CommandAssessment\Invoke-SumiGuardCommandAssessment -CommandText ([string]$input.tool_input.command) -ExecutionId $executionId -InterpreterKind $kind -InterpreterVerified $verified
+            $assessment = SumiGuard.CommandAssessment\Invoke-SumiGuardCommandAssessment -CommandText ([string]$hookInput.tool_input.command) -ExecutionId $executionId -InterpreterKind $kind -InterpreterVerified $verified
         }
         finally { if ($TestForceEvaluationFailure) { $assessmentModule.SessionState.PSVariable.Set('SumiGuardTestForceEvaluationFailure', $false) } }
         # PreToolUse does not prove execution. Store it only as a synthetic assessment with no related execution ID.

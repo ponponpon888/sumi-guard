@@ -2,7 +2,7 @@
 param()
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
-$root = 'C:\Dev\sumi-guard'
+$root = Split-Path -Parent $PSScriptRoot
 $module = Join-Path $root 'kit\sumi-guard-hook-assessment-store-test\SumiGuard.HookAssessmentStoreAdapter.psd1'
 $storeManifest = Join-Path $root 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1'
 $rows = New-Object System.Collections.Generic.List[object]

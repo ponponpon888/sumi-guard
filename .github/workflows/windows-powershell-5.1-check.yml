@@ -1,0 +1,56 @@
+# Windows PowerShell 5.1 checks for SUMI Guard.
+#
+# What this workflow establishes: the repository's PowerShell files parse under
+# Windows PowerShell 5.1, carry the UTF-8 BOM that 5.1 needs for non-ASCII
+# text, pass PSScriptAnalyzer at Error severity, and that the test scripts
+# using only synthetic input pass on a clean Windows host.
+#
+# What it does not establish: anything about DPAPI CurrentUser protection,
+# independent OS process observation, DIRECT_MATCH, or behaviour on an
+# operator machine. The DPAPI-dependent tests are excluded with their reasons
+# in .github/scripts/Invoke-SumiGuardCiTestSuite.ps1. A green run is not a
+# measurement record; see docs/25-ci-windows-powershell-check.md.
+name: windows-powershell-5.1-check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  syntax-and-encoding:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Report host PowerShell version
+        shell: powershell
+        run: $PSVersionTable | Format-List | Out-String | Write-Host
+      - name: Parse every PowerShell file without executing it
+        shell: powershell
+        run: .\.github\scripts\Invoke-SumiGuardSyntaxCheck.ps1
+
+  script-analyzer:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run PSScriptAnalyzer, failing on Error severity only
+        shell: powershell
+        run: .\.github\scripts\Invoke-SumiGuardAnalyzerCheck.ps1 -FailOnSeverity Error
+
+  dpapi-independent-tests:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the test scripts that do not depend on DPAPI CurrentUser
+        shell: powershell
+        run: .\.github\scripts\Invoke-SumiGuardCiTestSuite.ps1

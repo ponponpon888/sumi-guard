@@ -279,6 +279,7 @@ try {
         content_status = $contentStatus
         collection_status = $collectionStatus
         body_ref = $bodyRef
+        body_sha256 = $bodySha256
         body_reference_status = $bodyReferenceStatus
         response_body_included = $false
     }

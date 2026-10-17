@@ -16,8 +16,20 @@ function New-SumiGuardManagedVerificationResult {
         storage_status = 'NOT_ATTEMPTED'; content_included = $false
     }
 }
+# $CallerInterpreterVerified is accepted and then deliberately never read. A
+# caller's declaration cannot establish the target interpreter (the trust
+# boundary in docs/24), so the parameter exists to let a caller pass such a
+# declaration and have it make no difference. The test
+# SELF_DECLARATION_NOT_TRUSTED in tests/Invoke-ManagedAssessmentVerificationTests.ps1
+# passes -CallerInterpreterVerified $true and asserts the result is still
+# unverified. Removing the parameter would remove the ability to test that.
 function Test-SumiGuardManagedAssessmentEvidence {
-    [CmdletBinding()]param(
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSReviewUnusedParameter',
+        '',
+        Justification = 'CallerInterpreterVerified is ignored by design: a caller declaration is not evidence of the target interpreter. A test passes it to prove it is ignored.')]
+    param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AssessmentCommandText,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$LaunchCommandText,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AssessmentExecutionId,
