@@ -138,9 +138,14 @@ function Get-SumiGuardFailedCaseDigest {
 
     if ($null -eq $Summary) { return '' }
     $names = $Summary.PSObject.Properties.Name
-    if ($names -notcontains 'results') { return '' }
+    # The test scripts do not agree on one name for the per-case array. Without
+    # all of them, a failing suite reports only its counts and the failing case
+    # has to be found by re-reading the whole log.
+    $rowsProperty = @('results', 'tests', 'cases') | Where-Object { $names -contains $_ } |
+        Select-Object -First 1
+    if ([string]::IsNullOrEmpty($rowsProperty)) { return '' }
 
-    $failedRows = @(@($Summary.results) | Where-Object {
+    $failedRows = @(@($Summary.$rowsProperty) | Where-Object {
         $null -ne $_ -and (
             (($_.PSObject.Properties.Name -contains 'pass') -and (-not [bool]$_.pass)) -or
             (($_.PSObject.Properties.Name -contains 'result') -and ([string]$_.result -cne 'PASS'))
