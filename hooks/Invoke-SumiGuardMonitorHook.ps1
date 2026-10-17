@@ -163,7 +163,10 @@ $result = [ordered]@{
 $assessment = $null
 
 try {
-    if ($null -eq $RawHookInputJson) {
+    # An unbound [string] parameter can arrive as $null or as an empty string
+    # depending on how the host invoked the script, and both mean "nothing was
+    # passed", so standard input is the source in either case.
+    if ([string]::IsNullOrEmpty($RawHookInputJson)) {
         $RawHookInputJson = [Console]::In.ReadToEnd()
     }
 

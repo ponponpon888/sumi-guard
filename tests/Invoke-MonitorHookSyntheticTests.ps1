@@ -110,10 +110,14 @@ function Invoke-Hook {
         throw [System.InvalidOperationException]::new('assessment store setup failed')
     }
 
+    # The event goes in over standard input, which is how a hook host delivers
+    # it. It is not passed as -RawHookInputJson here: Windows PowerShell 5.1
+    # does not reliably preserve a JSON argument across a native command
+    # boundary, and a mangled argument reaches the hook as an unreadable event
+    # rather than as an error.
     $arguments = @(
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', $hookPath,
-        '-RawHookInputJson', $EventJson,
         '-ExecutionStorePath', (Join-Path $caseRoot 'execution-store'),
         '-LocalStorePath', (Join-Path $caseRoot 'body-store'),
         '-AssessmentStorePath', $assessmentStorePath,
@@ -127,7 +131,7 @@ function Invoke-Hook {
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $stdout = & $powerShell51 @arguments 2>&1
+        $stdout = $EventJson | & $powerShell51 @arguments 2>&1
         $exitCode = $LASTEXITCODE
     }
     finally {
