@@ -388,13 +388,28 @@ try {
     try {
         $script:stage = 'assert/invalid'
         $invalid = Invoke-Hook -CaseName 'invalid' -TrustedRoute -EventJson '{invalid'
+        # Read one field per statement, with a marker before each. The combined
+        # expression threw under Set-StrictMode 2.0 and the statement line alone
+        # could not say which read did it.
+        $script:stage = 'read/invalid/hook_status'
+        $invalidHookStatus = [string](Get-DetailField -Run $invalid -Name 'hook_status')
+        $script:stage = 'read/invalid/assessment_storage_status'
+        $invalidAssessmentStorage = [string](Get-DetailField -Run $invalid -Name 'assessment_storage_status')
+        $script:stage = 'read/invalid/intent_storage_status'
+        $invalidIntentStorage = [string](Get-DetailField -Run $invalid -Name 'intent_storage_status')
+        $script:stage = 'read/invalid/interpreter_reason_code'
+        $invalidInterpreterReason = [string](Get-DetailField -Run $invalid -Name 'interpreter_reason_code')
+        $script:stage = 'read/invalid/store_text'
+        $invalidStoreText = [string](Get-RunField -Run $invalid -Name 'store_text')
+        $script:stage = 'read/invalid/observed'
+        $invalidObserved = Get-ObservedDiagnostic -Run $invalid
         $script:stage = 'add/INVALID_INPUT_STORES_NOTHING'
         Add-Result 'INVALID_INPUT_STORES_NOTHING' (
-            [string](Get-DetailField -Run $invalid -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
-            [string](Get-DetailField -Run $invalid -Name 'assessment_storage_status') -ceq 'NOT_ATTEMPTED' -and
-            [string](Get-DetailField -Run $invalid -Name 'intent_storage_status') -ceq 'NOT_ATTEMPTED' -and
-            [string](Get-DetailField -Run $invalid -Name 'interpreter_reason_code') -ceq 'HOOK_INPUT_INVALID' -and
-            ([string](Get-RunField -Run $invalid -Name 'store_text')).Length -eq 0) -Observed (Get-ObservedDiagnostic -Run $invalid)
+            $invalidHookStatus -ceq 'INVALID_HOOK_INPUT' -and
+            $invalidAssessmentStorage -ceq 'NOT_ATTEMPTED' -and
+            $invalidIntentStorage -ceq 'NOT_ATTEMPTED' -and
+            $invalidInterpreterReason -ceq 'HOOK_INPUT_INVALID' -and
+            $invalidStoreText.Length -eq 0) -Observed $invalidObserved
         $script:stage = 'add/INVALID_INPUT_IS_MONITOR_ONLY'
         Add-Result 'INVALID_INPUT_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $invalid)
 
@@ -414,10 +429,16 @@ try {
         $script:stage = 'assert/post'
         $post = Invoke-Hook -CaseName 'post' -TrustedRoute `
             -EventJson (Get-HookEventJson -Command 'Get-Date' -HookEventName 'PostToolUse')
+        $script:stage = 'read/post/hook_status'
+        $postHookStatus = [string](Get-DetailField -Run $post -Name 'hook_status')
+        $script:stage = 'read/post/store_text'
+        $postStoreText = [string](Get-RunField -Run $post -Name 'store_text')
+        $script:stage = 'read/post/observed'
+        $postObserved = Get-ObservedDiagnostic -Run $post
         $script:stage = 'add/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
         Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' (
-            [string](Get-DetailField -Run $post -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
-            ([string](Get-RunField -Run $post -Name 'store_text')).Length -eq 0)
+            $postHookStatus -ceq 'INVALID_HOOK_INPUT' -and
+            $postStoreText.Length -eq 0) -Observed $postObserved
 
         # The design requires the intent save to happen even when evaluation fails,
         # and a record to exist for EVALUATION_FAILED.
