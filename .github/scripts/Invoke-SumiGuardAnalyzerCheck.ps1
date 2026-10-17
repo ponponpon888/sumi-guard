@@ -150,6 +150,15 @@ $summary = [pscustomobject][ordered]@{
 }
 $summary | ConvertTo-Json -Depth 4
 
+# Repeated after the summary so the last lines of the job log carry the reason.
+if ($baselineViolations.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'FAILURES:'
+    foreach ($violation in $baselineViolations) {
+        Write-Host ('  ABOVE_BASELINE: ' + $violation)
+    }
+}
+
 if ($blocking -gt 0 -or $baselineViolations.Count -gt 0) {
     exit 1
 }

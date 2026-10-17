@@ -130,6 +130,28 @@ function Get-SumiGuardTestDiagnostic {
     return (' [' + ($parts -join ' ') + ']')
 }
 
+# A test that reports per-case rows says which ones failed. Carrying those rows
+# into the failure line keeps a diagnosis at the end of the job log, instead of
+# a few hundred lines up inside the test's own output.
+function Get-SumiGuardFailedCaseDigest {
+    param($Summary)
+
+    if ($null -eq $Summary) { return '' }
+    $names = $Summary.PSObject.Properties.Name
+    if ($names -notcontains 'results') { return '' }
+
+    $failedRows = @(@($Summary.results) | Where-Object {
+        $null -ne $_ -and (
+            (($_.PSObject.Properties.Name -contains 'pass') -and (-not [bool]$_.pass)) -or
+            (($_.PSObject.Properties.Name -contains 'result') -and ([string]$_.result -cne 'PASS'))
+        )
+    })
+    if ($failedRows.Count -eq 0) { return '' }
+
+    $parts = @($failedRows | ForEach-Object { ($_ | ConvertTo-Json -Compress -Depth 5) })
+    return (' cases=' + ($parts -join ' '))
+}
+
 $results = New-Object System.Collections.Generic.List[object]
 $failures = New-Object System.Collections.Generic.List[string]
 $temporaryDirectories = New-Object System.Collections.Generic.List[string]
@@ -197,6 +219,7 @@ try {
         # Carry whatever stage the test itself named into the failure line, so
         # the job summary explains a failure without opening the raw log.
         $diagnostic = Get-SumiGuardTestDiagnostic -Summary $summary
+        $diagnostic = $diagnostic + (Get-SumiGuardFailedCaseDigest -Summary $summary)
 
         $results.Add([pscustomobject][ordered]@{
             name = $name
@@ -244,6 +267,12 @@ $summaryObject = [pscustomobject][ordered]@{
 }
 $summaryObject | ConvertTo-Json -Depth 6
 
+# Repeated after the summary so the last lines of the job log carry the reason.
 if ($failures.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'FAILURES:'
+    foreach ($failure in $failures) {
+        Write-Host ('  ' + $failure)
+    }
     exit 1
 }
