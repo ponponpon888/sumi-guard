@@ -39,33 +39,61 @@ function Add-Result {
     $results.Add([pscustomobject]$row)
 }
 
-function Get-ObservedDiagnostic {
-    param([Parameter(Mandatory = $true)]$Run)
+# Reads one field of a hook result. A missing field returns $null instead of
+# throwing: under Set-StrictMode 2.0 a direct property access on an absent field
+# aborts the whole test, which costs a run and reports nothing about the case
+# that was being checked.
+function Get-DetailField {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Run,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    if ($null -eq $Run) { return $null }
+    if (@($Run.PSObject.Properties.Name) -notcontains 'detail') { return $null }
 
     $detail = $Run.detail
-    if ($null -eq $detail) {
+    if ($null -eq $detail) { return $null }
+    if (@($detail.PSObject.Properties.Name) -notcontains $Name) { return $null }
+
+    return $detail.$Name
+}
+
+function Get-ObservedDiagnostic {
+    param([Parameter(Mandatory = $true)][AllowNull()]$Run)
+
+    if ($null -eq $Run -or
+        (@($Run.PSObject.Properties.Name) -notcontains 'detail') -or
+        $null -eq $Run.detail) {
         return @{ detail_present = $false }
     }
 
     $ruleIds = @()
     $reasonCode = $null
-    if ($null -ne $detail.assessment) {
-        $ruleIds = @(@($detail.assessment.findings) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.rule_id })
-        $reasonCode = [string]$detail.assessment.assessment_reason_code
+    $assessment = Get-DetailField -Run $Run -Name 'assessment'
+    if ($null -ne $assessment) {
+        if (@($assessment.PSObject.Properties.Name) -contains 'findings') {
+            $ruleIds = @(@($assessment.findings) | Where-Object { $null -ne $_ } | ForEach-Object { [string]$_.rule_id })
+        }
+        if (@($assessment.PSObject.Properties.Name) -contains 'assessment_reason_code') {
+            $reasonCode = [string]$assessment.assessment_reason_code
+        }
     }
 
     return @{
         detail_present = $true
-        hook_status = [string]$detail.hook_status
-        assessment_status = [string]$detail.assessment_status
+        hook_status = [string](Get-DetailField -Run $Run -Name 'hook_status')
+        assessment_status = [string](Get-DetailField -Run $Run -Name 'assessment_status')
         assessment_reason_code = $reasonCode
         rule_ids = $ruleIds
         findings_count = $ruleIds.Count
-        assessment_storage_status = [string]$detail.assessment_storage_status
-        intent_storage_status = [string]$detail.intent_storage_status
-        notice_status = [string]$detail.notice_status
-        interpreter_verified = [bool]$detail.interpreter_verified
-        interpreter_reason_code = [string]$detail.interpreter_reason_code
+        assessment_storage_status = [string](Get-DetailField -Run $Run -Name 'assessment_storage_status')
+        intent_storage_status = [string](Get-DetailField -Run $Run -Name 'intent_storage_status')
+        intent_save_path = [string](Get-DetailField -Run $Run -Name 'intent_save_path')
+        body_store_reached = [bool](Get-DetailField -Run $Run -Name 'body_store_reached')
+        notice_status = [string](Get-DetailField -Run $Run -Name 'notice_status')
+        interpreter_verified = [bool](Get-DetailField -Run $Run -Name 'interpreter_verified')
+        interpreter_reason_code = [string](Get-DetailField -Run $Run -Name 'interpreter_reason_code')
         exit_code = $Run.exit_code
     }
 }
@@ -184,7 +212,7 @@ function Test-MonitorOnlyResponse {
     }
 
     if ($null -eq $Run.detail) { return $false }
-    return ((-not [bool]$Run.detail.automatic_deny) -and ([string]$Run.detail.monitor_action -ceq 'WARN_ONLY'))
+    return ((-not [bool](Get-DetailField -Run $Run -Name 'automatic_deny')) -and ([string](Get-DetailField -Run $Run -Name 'monitor_action') -ceq 'WARN_ONLY'))
 }
 
 try {
@@ -205,16 +233,16 @@ try {
         -EventJson (Get-HookEventJson -Command 'Set-MpPreference -DisableRealtimeMonitoring $true')
     $detectedDiagnostic = Get-ObservedDiagnostic -Run $detected
     Add-Result 'TRUSTED_ROUTE_DETECTED' (
-        [string]$detected.detail.assessment_status -ceq 'DETECTED' -and
-        [string]$detected.detail.assessment_storage_status -ceq 'SAVED' -and
-        [string]$detected.detail.intent_storage_status -ceq 'TEST_DOUBLE_SAVED' -and
-        [bool]$detected.detail.interpreter_verified -and
+        [string](Get-DetailField -Run $detected -Name 'assessment_status') -ceq 'DETECTED' -and
+        [string](Get-DetailField -Run $detected -Name 'assessment_storage_status') -ceq 'SAVED' -and
+        [string](Get-DetailField -Run $detected -Name 'intent_storage_status') -ceq 'TEST_DOUBLE_SAVED' -and
+        [bool](Get-DetailField -Run $detected -Name 'interpreter_verified') -and
         $detectedDiagnostic.findings_count -eq 1 -and
         @($detectedDiagnostic.rule_ids) -ccontains 'SG-CMD-002') -Observed $detectedDiagnostic
     Add-Result 'DETECTED_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $detected) -Observed $detectedDiagnostic
     Add-Result 'DETECTED_RECORD_LINKED_TO_EXECUTION_ID' (
-        $detected.store_text.Contains([string]$detected.detail.execution_id) -and
-        [string]$detected.detail.evaluation_origin -ceq 'MANAGED_EXECUTION') -Observed $detectedDiagnostic
+        $detected.store_text.Contains([string](Get-DetailField -Run $detected -Name 'execution_id')) -and
+        [string](Get-DetailField -Run $detected -Name 'evaluation_origin') -ceq 'MANAGED_EXECUTION') -Observed $detectedDiagnostic
 
     # The same detection with a canary appended as a comment. A comment is not a
     # call, so the state stays the same, and the canary must not reach any output.
@@ -222,7 +250,7 @@ try {
         -EventJson (Get-HookEventJson -Command "Set-MpPreference -DisableRealtimeMonitoring `$true # $canary")
     $canaryDiagnostic = Get-ObservedDiagnostic -Run $canaryRun
     Add-Result 'TRAILING_COMMENT_DOES_NOT_CHANGE_STATE' (
-        [string]$canaryRun.detail.assessment_status -ceq [string]$detected.detail.assessment_status -and
+        [string](Get-DetailField -Run $canaryRun -Name 'assessment_status') -ceq [string](Get-DetailField -Run $detected -Name 'assessment_status') -and
         $canaryDiagnostic.findings_count -eq $detectedDiagnostic.findings_count) -Observed $canaryDiagnostic
     Add-Result 'NO_CONTENT_LEAK' (
         (-not $canaryRun.stdout_text.Contains($canary)) -and
@@ -234,26 +262,26 @@ try {
     $unverified = Invoke-Hook -CaseName 'unverified' `
         -EventJson (Get-HookEventJson -Command 'Set-MpPreference -DisableRealtimeMonitoring $true')
     Add-Result 'UNVERIFIED_ROUTE_IS_UNASSESSABLE' (
-        [string]$unverified.detail.assessment_status -ceq 'UNASSESSABLE' -and
-        [string]$unverified.detail.assessment.assessment_reason_code -ceq 'UNSUPPORTED_LANGUAGE' -and
-        [string]$unverified.detail.assessment_storage_status -ceq 'SAVED' -and
-        (-not [bool]$unverified.detail.interpreter_verified)) -Observed (Get-ObservedDiagnostic -Run $unverified)
+        [string](Get-DetailField -Run $unverified -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
+        [string](Get-DetailField -Run $unverified -Name 'assessment').assessment_reason_code -ceq 'UNSUPPORTED_LANGUAGE' -and
+        [string](Get-DetailField -Run $unverified -Name 'assessment_storage_status') -ceq 'SAVED' -and
+        (-not [bool](Get-DetailField -Run $unverified -Name 'interpreter_verified'))) -Observed (Get-ObservedDiagnostic -Run $unverified)
     Add-Result 'UNVERIFIED_ROUTE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $unverified)
 
     # A query is not a registration, so the same vocabulary does not detect.
     $query = Invoke-Hook -CaseName 'query' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command "Get-ScheduledTask -TaskName 'Synthetic'")
     Add-Result 'QUERY_IS_NO_DETECTION' (
-        [string]$query.detail.assessment_status -ceq 'NO_DETECTION' -and
-        [string]$query.detail.assessment_storage_status -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $query)
+        [string](Get-DetailField -Run $query -Name 'assessment_status') -ceq 'NO_DETECTION' -and
+        [string](Get-DetailField -Run $query -Name 'assessment_storage_status') -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $query)
 
     # Malformed event: nothing is stored and nothing is denied.
     $invalid = Invoke-Hook -CaseName 'invalid' -TrustedRoute -EventJson '{invalid'
     Add-Result 'INVALID_INPUT_STORES_NOTHING' (
-        [string]$invalid.detail.hook_status -ceq 'INVALID_HOOK_INPUT' -and
-        [string]$invalid.detail.assessment_storage_status -ceq 'NOT_ATTEMPTED' -and
-        [string]$invalid.detail.intent_storage_status -ceq 'NOT_ATTEMPTED' -and
-        [string]$invalid.detail.interpreter_reason_code -ceq 'HOOK_INPUT_INVALID' -and
+        [string](Get-DetailField -Run $invalid -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
+        [string](Get-DetailField -Run $invalid -Name 'assessment_storage_status') -ceq 'NOT_ATTEMPTED' -and
+        [string](Get-DetailField -Run $invalid -Name 'intent_storage_status') -ceq 'NOT_ATTEMPTED' -and
+        [string](Get-DetailField -Run $invalid -Name 'interpreter_reason_code') -ceq 'HOOK_INPUT_INVALID' -and
         $invalid.store_text.Length -eq 0) -Observed (Get-ObservedDiagnostic -Run $invalid)
     Add-Result 'INVALID_INPUT_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $invalid)
 
@@ -261,7 +289,7 @@ try {
     $post = Invoke-Hook -CaseName 'post' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command 'Get-Date' -HookEventName 'PostToolUse')
     Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' (
-        [string]$post.detail.hook_status -ceq 'INVALID_HOOK_INPUT' -and
+        [string](Get-DetailField -Run $post -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
         $post.store_text.Length -eq 0)
 
     # The design requires the intent save to happen even when evaluation fails,
@@ -269,9 +297,9 @@ try {
     $evaluationFailed = Invoke-Hook -CaseName 'evaluation-failed' -TrustedRoute -ForceEvaluationFailure `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
     Add-Result 'EVALUATION_FAILURE_STILL_SAVES_INTENT_AND_RECORD' (
-        [string]$evaluationFailed.detail.assessment_status -ceq 'EVALUATION_FAILED' -and
-        [string]$evaluationFailed.detail.assessment_storage_status -ceq 'SAVED' -and
-        [string]$evaluationFailed.detail.intent_storage_status -ceq 'TEST_DOUBLE_SAVED') -Observed (Get-ObservedDiagnostic -Run $evaluationFailed)
+        [string](Get-DetailField -Run $evaluationFailed -Name 'assessment_status') -ceq 'EVALUATION_FAILED' -and
+        [string](Get-DetailField -Run $evaluationFailed -Name 'assessment_storage_status') -ceq 'SAVED' -and
+        [string](Get-DetailField -Run $evaluationFailed -Name 'intent_storage_status') -ceq 'TEST_DOUBLE_SAVED') -Observed (Get-ObservedDiagnostic -Run $evaluationFailed)
     Add-Result 'EVALUATION_FAILURE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $evaluationFailed)
 
     # The two stores are not one transaction: a failed intent save still leaves
@@ -279,17 +307,17 @@ try {
     $intentFailed = Invoke-Hook -CaseName 'intent-failed' -TrustedRoute -IntentOutcome 'TEST_FAILURE' `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
     Add-Result 'INTENT_FAILURE_STILL_SAVES_ASSESSMENT' (
-        [string]$intentFailed.detail.intent_storage_status -ceq 'TEST_DOUBLE_IO_ERROR' -and
-        [string]$intentFailed.detail.assessment_storage_status -ceq 'SAVED' -and
-        (-not [bool]$intentFailed.detail.body_store_reached) -and
-        [string]$intentFailed.detail.notice_status -ceq 'NOTICE_WRITTEN' -and
+        [string](Get-DetailField -Run $intentFailed -Name 'intent_storage_status') -ceq 'TEST_DOUBLE_IO_ERROR' -and
+        [string](Get-DetailField -Run $intentFailed -Name 'assessment_storage_status') -ceq 'SAVED' -and
+        (-not [bool](Get-DetailField -Run $intentFailed -Name 'body_store_reached')) -and
+        [string](Get-DetailField -Run $intentFailed -Name 'notice_status') -ceq 'NOTICE_WRITTEN' -and
         $intentFailed.notice_text.Contains('INTENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $intentFailed)
 
     $intentThrew = Invoke-Hook -CaseName 'intent-threw' -TrustedRoute -IntentOutcome 'TEST_THROW' `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
     Add-Result 'INTENT_EXCEPTION_IS_NOT_A_SILENT_SUCCESS' (
-        [string]$intentThrew.detail.intent_storage_status -ceq 'INTENT_STORE_FAILED' -and
-        [string]$intentThrew.detail.assessment_storage_status -ceq 'SAVED' -and
+        [string](Get-DetailField -Run $intentThrew -Name 'intent_storage_status') -ceq 'INTENT_STORE_FAILED' -and
+        [string](Get-DetailField -Run $intentThrew -Name 'assessment_storage_status') -ceq 'SAVED' -and
         $intentThrew.notice_text.Contains('INTENT_STORE_FAILED') -and
         (-not $intentThrew.notice_text.Contains('Exception'))) -Observed (Get-ObservedDiagnostic -Run $intentThrew)
 
@@ -297,9 +325,9 @@ try {
     $saveFailed = Invoke-Hook -CaseName 'assessment-save-failed' -TrustedRoute -ForceAssessmentSaveFailure `
         -EventJson (Get-HookEventJson -Command "Set-MpPreference -DisableRealtimeMonitoring `$true")
     Add-Result 'ASSESSMENT_SAVE_FAILURE_IS_DISTINCT' (
-        [string]$saveFailed.detail.assessment_status -ceq 'DETECTED' -and
-        [string]$saveFailed.detail.assessment_storage_status -cne 'SAVED' -and
-        [string]$saveFailed.detail.notice_status -ceq 'NOTICE_WRITTEN' -and
+        [string](Get-DetailField -Run $saveFailed -Name 'assessment_status') -ceq 'DETECTED' -and
+        [string](Get-DetailField -Run $saveFailed -Name 'assessment_storage_status') -cne 'SAVED' -and
+        [string](Get-DetailField -Run $saveFailed -Name 'notice_status') -ceq 'NOTICE_WRITTEN' -and
         $saveFailed.notice_text.Contains('ASSESSMENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $saveFailed)
     Add-Result 'ASSESSMENT_SAVE_FAILURE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $saveFailed)
 
@@ -311,16 +339,16 @@ try {
     $third = Invoke-Hook -CaseName 'id-third' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command 'Get-Date' -ToolUseId 'tool-use-other')
     Add-Result 'EXECUTION_ID_IS_DETERMINISTIC_AND_IDENTITY_ONLY' (
-        [string]$first.detail.execution_id -ceq [string]$second.detail.execution_id -and
-        [string]$first.detail.execution_id -cne [string]$third.detail.execution_id -and
-        [string]$first.detail.execution_id -cmatch '^[0-9a-f]{32}$')
+        [string](Get-DetailField -Run $first -Name 'execution_id') -ceq [string](Get-DetailField -Run $second -Name 'execution_id') -and
+        [string](Get-DetailField -Run $first -Name 'execution_id') -cne [string](Get-DetailField -Run $third -Name 'execution_id') -and
+        [string](Get-DetailField -Run $first -Name 'execution_id') -cmatch '^[0-9a-f]{32}$')
 
     # An empty command is a state, not a detection.
     $empty = Invoke-Hook -CaseName 'empty' -TrustedRoute -EventJson (Get-HookEventJson -Command '')
     Add-Result 'EMPTY_COMMAND_IS_UNASSESSABLE' (
-        [string]$empty.detail.assessment_status -ceq 'UNASSESSABLE' -and
-        [string]$empty.detail.assessment.assessment_reason_code -ceq 'CONTENT_UNAVAILABLE' -and
-        [string]$empty.detail.assessment_storage_status -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $empty)
+        [string](Get-DetailField -Run $empty -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
+        [string](Get-DetailField -Run $empty -Name 'assessment').assessment_reason_code -ceq 'CONTENT_UNAVAILABLE' -and
+        [string](Get-DetailField -Run $empty -Name 'assessment_storage_status') -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $empty)
 }
 catch {
     $failure = [pscustomobject][ordered]@{
