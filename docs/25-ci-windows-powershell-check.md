@@ -72,11 +72,11 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 | `Information/PSProvideCommentHelp` | 19 |
 | `Warning/PSUseSingularNouns` | 16 |
 | `Warning/PSAvoidAssignmentToAutomaticVariable` | 12 |
-| `Warning/PSAvoidUsingWriteHost` | 12 |
-| `Warning/PSReviewUnusedParameter` | 9 |
+| `Warning/PSAvoidUsingWriteHost` | 0 |
+| `Warning/PSReviewUnusedParameter` | 8 |
 | `Warning/PSAvoidUsingEmptyCatchBlock` | 8 |
 | `Warning/PSUseDeclaredVarsMoreThanAssignments` | 5 |
-| `Warning/PSAvoidUsingCmdletAliases` | 1 |
+| `Warning/PSAvoidUsingCmdletAliases` | 0 |
 | `Warning/PSUseApprovedVerbs` | 1 |
 
 ### 基準値が最初に止めたのはCI自身の変更だった
