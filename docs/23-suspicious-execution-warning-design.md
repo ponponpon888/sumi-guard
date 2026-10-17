@@ -17,13 +17,15 @@
 | 2. 評価保存 | 実装済み | `src/SumiGuard.AssessmentStore/`、`tests/Invoke-AssessmentStoreTests.ps1` |
 | 3. 隔離フック接続 | 実装済み | `kit/sumi-guard-command-assessment-hook-test/`、`kit/sumi-guard-hook-assessment-store-test/` |
 | 4. 読取り表示 | 実装済み | `tools/Show-SumiGuardAssessments.ps1` |
-| 5. 限定MONITOR | **フック実装済み・運用端末未検証** | `hooks/Invoke-SumiGuardMonitorHook.ps1`、`tests/Invoke-MonitorHookSyntheticTests.ps1` |
+| 5. 限定MONITOR | **フック実装済み、合成試験20判定がCIで成功、運用端末未検証** | `hooks/Invoke-SumiGuardMonitorHook.ps1`、`tests/Invoke-MonitorHookSyntheticTests.ps1`、`measurements/2026-10-17-monitor-hook-synthetic-tests.md` |
 | 6. ルール拡張 | 未着手 | 誤検知測定とレビューが前提 |
 
 段階5のフックは、本書の「新しい運用用フックのPre処理順」1〜5をそのまま実装している。
-合成試験はCIの Windows PowerShell 5.1 で実行されるが、**本文保存の実経路（DPAPI CurrentUser）は
-検証していない**。試験は `-TestIntentSaveOutcome` で `SumiGuard.ExecutionAdapter` の呼出しを
-置き換えており、実経路の検証は運用端末での測定が必要である。恒久登録も行っていない。
+合成試験20判定はCIの Windows PowerShell 5.1 で成功しており、検知・状態の分離・失敗時の扱い・
+カナリア非漏洩・MONITOR応答までを確認した（`measurements/2026-10-17-monitor-hook-synthetic-tests.md`）。
+ただし**本文保存の実経路（DPAPI CurrentUser）は検証していない**。試験は
+`-TestIntentSaveOutcome` で `SumiGuard.ExecutionAdapter` の呼出しを置き換えており、実経路の
+検証は運用端末での測定が必要である。恒久登録も行っていない。
 
 ### 実装で判明した、設計側の未決事項
 
@@ -36,7 +38,7 @@
 また、フックは評価保存先のストアを自分では作らない。ストアが無ければ保存は失敗し、
 `ASSESSMENT_STORE_FAILED` の通知を書く。初期化は運用側の手順とする。
 
-### 実装中に踏んだ 5.1 固有の挙動
+### 実装中に踏んだ 5.1 固有の挙動（2件）
 
 フック事象JSONを `powershell.exe -File` の引数として子プロセスへ渡すと、Windows PowerShell 5.1
 では内容によって引数が保たれず、フック側には「読めない事象」として届いた。エラーにはならず、
@@ -44,6 +46,11 @@
 結果から見えない。合成試験は事象を標準入力で渡す形に変えた。これはフックホストが実際に使う
 経路でもある。フックは `-RawHookInputJson` も受け付けるが、未指定または空文字のときは標準入力を
 読む。
+
+もう1件は試験側である。`Set-StrictMode -Version 2.0` のもとでは、空文字になり得る変数への
+`.Length` が `PropertyNotFoundException` になり、試験全体が停止した。`[string]::IsNullOrEmpty`
+へ変更した。あわせて、1件の例外で他の判定結果が失われないよう、ケースごとに try/catch で
+隔離している。
 
 ## 基本原則
 

@@ -48,6 +48,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
+- `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果
 - `measurements/2026-10-03-sumi-guard-final-code-correspondence.md`: 最終コードと測定結果の対応確認
 - `measurements/2026-10-03-local-store-module-tests.md`: 保存モジュールの単体試験結果
