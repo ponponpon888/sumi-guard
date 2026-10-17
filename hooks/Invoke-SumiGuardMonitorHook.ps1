@@ -259,8 +259,16 @@ try {
         }
 
         if ($null -ne $intent -and $intent.success) {
-            $result.intent_storage_status = 'SAVED'
-            $result.body_store_reached = $true
+            # The adapter's own status is kept rather than flattened to SAVED.
+            # The real path reports EVENT_AND_BODY_SAVED; a test seam reports its
+            # own code. Flattening both to SAVED would let a run that never
+            # touched the protected body store read as though it had.
+            $status = 'SAVED'
+            if (-not [string]::IsNullOrWhiteSpace([string]$intent.status)) {
+                $status = [string]$intent.status
+            }
+            $result.intent_storage_status = $status
+            $result.body_store_reached = ($TestIntentSaveOutcome -ceq 'ADAPTER')
         }
         else {
             $status = 'INTENT_STORE_FAILED'
