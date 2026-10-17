@@ -15,7 +15,13 @@ param(
     # recorded number, or a rule absent from the file, fails the check. This
     # holds the counts from going up without fixing the existing findings
     # first, which would otherwise take one change per rule to even start.
-    [string]$BaselinePath
+    [string]$BaselinePath,
+
+    # Rules with at most this many findings are listed again at the end of the
+    # log, with file and line. Those are the ones small enough to act on, and
+    # the end of the log is where they can be read without pulling the whole
+    # run. 0 turns the listing off.
+    [ValidateRange(0, 1000)][int]$ActionableFindingLimit = 10
 )
 
 Set-StrictMode -Version 2.0
@@ -156,6 +162,25 @@ if ($baselineViolations.Count -gt 0) {
     Write-Host 'FAILURES:'
     foreach ($violation in $baselineViolations) {
         Write-Host ('  ABOVE_BASELINE: ' + $violation)
+    }
+}
+
+# Listed at the end so the small rules can be read from the log tail.
+if ($ActionableFindingLimit -gt 0) {
+    $smallRules = @($byRule | Where-Object { $_.Count -le $ActionableFindingLimit })
+    if ($smallRules.Count -gt 0) {
+        Write-Host ''
+        Write-Host ("ACTIONABLE FINDINGS (rules with at most {0} findings):" -f $ActionableFindingLimit)
+        foreach ($group in $smallRules) {
+            Write-Host ('  ' + $group.Name + ':')
+            foreach ($finding in $group.Group) {
+                $relative = $finding.ScriptPath
+                if (-not [string]::IsNullOrEmpty($relative) -and $relative.StartsWith($RepositoryRoot)) {
+                    $relative = $relative.Substring($RepositoryRoot.Length).TrimStart('\')
+                }
+                Write-Host ('    {0}:{1}  {2}' -f $relative, $finding.Line, $finding.Message)
+            }
+        }
     }
 }
 
