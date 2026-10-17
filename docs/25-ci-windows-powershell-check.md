@@ -93,6 +93,43 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 同じ実行で `PSAvoidAssignmentToAutomaticVariable` は12件に下がった（基準値14）。`$input` の
 代入が1行に2箇所あったためである。基準値は実測値へ下げた。
 
+### 件数の少ないルールの指摘（2026-10-17、実行 39027315699）
+
+`ACTIONABLE FINDINGS` で全24件の場所が取れた。分類は次のとおり。
+
+#### 直したもの
+
+- `kit/sumi-guard-real-hook-assessment-check/Invoke-SumiGuardRealHookAssessmentCheck.ps1:94`
+  の `%`（`ForEach-Object` の別名）を正式名に変更した。意味は同じで、このファイルは
+  ハッシュを記録した検証済みスクリプトではない。基準値を1から0へ下げた。
+
+#### 判断が必要なもの（このPRでは触っていない）
+
+| 箇所 | 内容 | なぜ判断が必要か |
+|---|---|---|
+| `kit/sumi-guard-prototype/process-observer.ps1:3,4` | `-RootPidFile` と `-OutputPath` が **Mandatory なのに本体で未参照** | 呼び出し側が必ず渡す値を無視している。出力先の指定が効いていない可能性がある。READMEにSHA-256を記録した検証済みスクリプトであり、変更すると測定記録との対応が切れる |
+| `src/SumiGuard.ManagedAssessmentVerification/SumiGuard.ManagedAssessmentVerification.psm1:25` | `Test-SumiGuardManagedAssessmentEvidence` の `$CallerInterpreterVerified` が未参照 | インタプリタ検証の根拠を扱う関数が「呼び出し側は検証済みと言っている」という入力を無視している。削除はAPI変更、使用は判定の変更になる |
+| `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1:58` | `$EmitJapaneseDisplay` が未参照 | 渡しても何も起きないスイッチである。実装するか削除するかは仕様の判断 |
+| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1:250` | `$bodySha256` を代入しているが読んでいない | 本文ハッシュを計算・取得して捨てている。このファイルは `measurements/2026-10-03-protected-hook-integration-test.md` と対応している |
+| `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石だが、保存層の変更になる |
+
+#### 理由を付けて残すもの
+
+- **空のcatch 8件**。`src/SumiGuard.AssessmentStore` の3件は、例外チェーンを辿る途中の
+  非準拠な例外の読み飛ばし（50行）と、一時ファイル・バックアップの削除失敗（758、762行）で、
+  いずれも後始末であり、保存の成否判定には影響しない。`demo/` の2件と
+  `kit/sumi-guard-protected-hook-test/` の2件も後始末、`kit/sumi-guard-prototype/process-observer.ps1`
+  の1件は検証済みスクリプトである。ただし「記録失敗を暗黙の成功にしない」という方針との
+  整合は未判断で、基準値で増えないことだけ担保している
+- **`$discard` 2件**（`kit/sumi-guard-protected-hook-test/invoke-sumi-guard-protected-hook-test.ps1:711`、
+  `kit/sumi-guard-prototype/invoke-sumi-guard-prototype.ps1:631`）。出力の破棄であり、
+  `$null =` が定石だが動作は同じ。後者は検証済みスクリプト
+- **`$stderr` 2件**（`tests/Invoke-RealHookRunnerSyntheticTests.ps1:40,173`）。標準エラーを
+  捕捉して判定に使っていない。判定を足すかは試験の仕様の判断
+- **試験の未使用パラメーター4件**（`tests/Invoke-ManagedAssessmentVerificationConnectionTests.ps1:49`
+  の `body`・`eid`・`verified`、`tests/Invoke-PowerShellCommandCliTests.ps1:33,42` の `Unused`）。
+  差し替え用スクリプトブロックの引数と、意図して未使用にしている引数である
+
 ### 自動変数への代入のうち、実害があったもの
 
 `kit/sumi-guard-hook-assessment-store-test/SumiGuard.HookAssessmentStoreAdapter.psm1` が、
