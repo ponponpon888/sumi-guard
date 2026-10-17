@@ -47,6 +47,19 @@ foreach ($result in $results) {
         $result.Message)
 }
 
+# Per-rule counts, so a decision about which rules to make blocking can be
+# made from numbers instead of by reading every finding in the raw log.
+$byRule = @($results |
+    Group-Object -Property @{ Expression = { "$($_.Severity)/$($_.RuleName)" } } |
+    Sort-Object -Property Count -Descending)
+
+Write-Host ''
+Write-Host 'Findings per rule:'
+foreach ($group in $byRule) {
+    Write-Host ("  {0,4}  {1}" -f $group.Count, $group.Name)
+}
+Write-Host ''
+
 $errorCount = @($results | Where-Object { $_.Severity -eq 'Error' }).Count
 $warningCount = @($results | Where-Object { $_.Severity -eq 'Warning' }).Count
 $informationCount = @($results | Where-Object { $_.Severity -eq 'Information' }).Count
@@ -68,6 +81,9 @@ $summary = [pscustomobject][ordered]@{
     warning_count = $warningCount
     information_count = $informationCount
     blocking_count = $blocking
+    findings_per_rule = @($byRule | ForEach-Object {
+        [pscustomobject][ordered]@{ rule = $_.Name; count = $_.Count }
+    })
     scripts_executed = $false
 }
 $summary | ConvertTo-Json -Depth 4
