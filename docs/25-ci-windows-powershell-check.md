@@ -38,6 +38,12 @@
 を返す。試験は親プロセスから `powershell.exe`（`System32\WindowsPowerShell\v1.0`）を明示指定して
 子プロセスで実行するため、5.1 以外のホストで動くことはない。
 
+試験ごとの引数は実行一覧に持つ。`Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1` は
+`-RunSyntheticTests` が無いと8ケースを実行せず `mode=idle` で終了コード0を返すため、この引数を
+渡す。あわせて、同スクリプトが開始前にスナップショットを取る `.demo-data` はデモ実行で生成される
+ものでリポジトリに無いため、ランナーが空のディレクトリを作って `-DemoDataPath` で渡し、実行後に
+削除する。
+
 ## 実行対象から除外した試験
 
 | 試験 | 理由 |
@@ -57,8 +63,29 @@
 - `NONZERO_EXIT`: 試験が非0で終了した。
 - `SUMMARY_UNPARSED`: 終了コード0だがJSON要約を読めなかった。要約を出さない変更の検出を意図する。
 - `SUMMARY_FAILURE`: 終了コード0だが要約が `success=false` を報告した。
+- `NO_SUCCESS_FIELD`: 終了コード0だが要約に `success` が無い。1件も判定していない実行（idle、dry）を成功と数えないための失敗である。
 - `UNCLASSIFIED_TEST`: 実行一覧・除外一覧のどちらにも無い試験ファイルがある。
 - `MISSING_TEST`: 実行一覧にあるファイルが存在しない。
+
+## 初回実行で見つかったもの
+
+初回実行（commit `1024cbd`）で、既存試験2件が GitHub ホストランナーで失敗した。どちらも
+CI側の不具合ではなく、作業端末の環境に依存していた箇所である。
+
+- `tests/Invoke-HookAssessmentStoreAdapterTests.ps1` は先頭でリポジトリ位置を
+  `C:\Dev\sumi-guard` と直書きしていた。`Import-Module` が
+  `System.IO.FileNotFoundException` で失敗し、`failure_stage=INITIALIZATION` で終了コード1に
+  なった。他の試験と同じ `Split-Path -Parent $PSScriptRoot` に変更した。作業端末の配置が
+  `C:\Dev\sumi-guard` であれば解決結果は同じであり、試験内容は変えていない。
+- `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1` は、存在しない
+  `.demo-data` を開始前スナップショットで走査し、`stage=pre_snapshot` の
+  `MethodInvocationException` で終了コード2になった。あわせて `-RunSyntheticTests` を
+  渡していなかったため、仮に通っていても8ケースは実行されていなかった。試験側は変更せず、
+  ランナーが引数で対応する。
+
+`kit/sumi-guard-real-hook-assessment-check/Invoke-SumiGuardRealHookAssessmentCheck.ps1` にも
+同じ `C:\Dev\sumi-guard` の直書きが残っている。このスクリプトはCIの対象外（実フックとCodexを
+必要とする）ため、この変更では触っていない。
 
 ## 制約
 
