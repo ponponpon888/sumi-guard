@@ -20,8 +20,8 @@
 - 独立したOS観測、`DIRECT_MATCH`、感染判定、誤検知判定、自動遮断。いずれも未実装である。
 - 運用端末での動作。GitHub ホストランナーは使い捨ての別ユーザープロファイルであり、
   ここでの結果は `measurements/` に残す測定記録の代わりにはならない。
-- Warning 以下の深刻度の指摘がないこと。現在は Error だけを失敗条件にしており、
-  Warning と Information は件数と内容を出力するだけである。
+- Warning 以下の深刻度の指摘がないこと。Error 以外は、下記の基準値を超えないことだけを
+  失敗条件にしている。既存の指摘がなくなったことは意味しない。
 
 緑になった実行は「上記の点検範囲で機械的な不一致が出なかった」という意味に限られる。
 安全、無感染、完成のいずれも意味しない。
@@ -31,7 +31,7 @@
 | ジョブ | スクリプト | 失敗条件 |
 |---|---|---|
 | `syntax-and-encoding` | `.github/scripts/Invoke-SumiGuardSyntaxCheck.ps1` | 構文エラー、または非ASCIIかつBOMなし |
-| `script-analyzer` | `.github/scripts/Invoke-SumiGuardAnalyzerCheck.ps1` | Error 深刻度の指摘が1件以上 |
+| `script-analyzer` | `.github/scripts/Invoke-SumiGuardAnalyzerCheck.ps1` | Error 深刻度の指摘が1件以上、またはルール別件数が基準値を超える |
 | `dpapi-independent-tests` | `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1` | 終了コード非0、JSON要約が読めない、または `success=false` |
 
 各スクリプトは既存の試験スクリプトと同じ形式で、JSON要約を標準出力へ出し、失敗時に終了コード1
@@ -43,6 +43,59 @@
 渡す。あわせて、同スクリプトが開始前にスナップショットを取る `.demo-data` はデモ実行で生成される
 ものでリポジトリに無いため、ランナーが空のディレクトリを作って `-DemoDataPath` で渡し、実行後に
 削除する。
+
+## 静的解析の基準値
+
+`.github/analyzer-baseline.json` に、リポジトリが現在抱えているルール別の件数を持つ。
+検査は次を失敗とする。
+
+- あるルールの件数が基準値を超えた
+- 基準値ファイルに無いルールの指摘が出た
+
+件数が基準値を下回った場合は失敗させず、`BELOW_BASELINE` として「基準値を下げられる」と
+出力する。直したら同じコミットで数字を下げる、という運用にするためである。
+
+Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Information 101件はいくら増えても
+通ってしまう。かといって一度に全部直すのは、判定内容を変えない保証が取れない。基準値を置けば、
+今日のコストを0にしたまま、後退だけを止められる。
+
+2026-10-17 時点の基準値（commit `506faeb`、PSScriptAnalyzer 1.25.0 の実測）は次のとおり。
+
+| ルール | 件数 |
+|---|---|
+| `Information/PSAvoidUsingPositionalParameters` | 82 |
+| `Warning/PSUseShouldProcessForStateChangingFunctions` | 36 |
+| `Information/PSProvideCommentHelp` | 19 |
+| `Warning/PSUseSingularNouns` | 16 |
+| `Warning/PSAvoidAssignmentToAutomaticVariable` | 14 |
+| `Warning/PSReviewUnusedParameter` | 9 |
+| `Warning/PSAvoidUsingWriteHost` | 9 |
+| `Warning/PSAvoidUsingEmptyCatchBlock` | 8 |
+| `Warning/PSUseDeclaredVarsMoreThanAssignments` | 5 |
+| `Warning/PSAvoidUsingCmdletAliases` | 1 |
+| `Warning/PSUseApprovedVerbs` | 1 |
+
+### 自動変数への代入のうち、実害があったもの
+
+`kit/sumi-guard-hook-assessment-store-test/SumiGuard.HookAssessmentStoreAdapter.psm1` が、
+解析したフック入力を `$input` に代入していた。`$input` は関数スコープのパイプライン列挙子で
+あり、代入するとその関数のパイプライン入力が壊れる。現在この関数はパイプライン入力を
+受けないため動いているが、受けるようにした時点で静かに壊れる種類の箇所である。
+`$hookInput` に変更した。このモジュールは `tests/Invoke-HookAssessmentStoreAdapterTests.ps1`
+がCIで実行するため、変更はCIで検証される。
+
+残る `PSAvoidAssignmentToAutomaticVariable` は `$event` への代入である。`$event` が自動変数に
+なるのはイベント購読スクリプトブロックの中だけで、通常のスコープでは実害が出ない。うち3件は
+`kit/sumi-guard-prototype/` の検証済みスクリプト（READMEにSHA-256を記録している3本）にあり、
+変更すればハッシュと測定記録の対応が切れる。隔離環境での再検証が必要になるため、この変更では
+触っていない。
+
+### 空のcatchブロック
+
+8件ある。うち `kit/sumi-guard-prototype/process-observer.ps1` の1件は検証済みスクリプトであり
+触っていない。残りは一時ファイルの削除失敗など後始末の箇所だが、「記録失敗を暗黙の成功に
+しない」という設計方針と、どこまで整合させるかは未判断である。基準値に載せて、増えないことだけ
+担保している。
 
 ## 実行対象から除外した試験
 

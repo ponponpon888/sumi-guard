@@ -5,7 +5,13 @@ param(
     # Only this severity fails the check. Lower severities are printed so their
     # counts are visible before any rule is made blocking.
     [ValidateSet('Error', 'Warning', 'Information')]
-    [string]$FailOnSeverity = 'Error'
+    [string]$FailOnSeverity = 'Error',
+
+    # Per-rule counts the repository currently carries. A rule above its
+    # recorded number, or a rule absent from the file, fails the check. This
+    # holds the counts from going up without fixing the existing findings
+    # first, which would otherwise take one change per rule to even start.
+    [string]$BaselinePath
 )
 
 Set-StrictMode -Version 2.0
@@ -13,6 +19,10 @@ $ErrorActionPreference = 'Stop'
 
 if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+}
+
+if ([string]::IsNullOrWhiteSpace($BaselinePath)) {
+    $BaselinePath = Join-Path (Split-Path -Parent $PSScriptRoot) 'analyzer-baseline.json'
 }
 
 if (-not (Get-Module -ListAvailable -Name PSScriptAnalyzer)) {
@@ -64,6 +74,50 @@ $errorCount = @($results | Where-Object { $_.Severity -eq 'Error' }).Count
 $warningCount = @($results | Where-Object { $_.Severity -eq 'Warning' }).Count
 $informationCount = @($results | Where-Object { $_.Severity -eq 'Information' }).Count
 
+$baselineRules = $null
+if (Test-Path -LiteralPath $BaselinePath) {
+    $baselineRules = (Get-Content -LiteralPath $BaselinePath -Raw -Encoding UTF8 | ConvertFrom-Json).rules
+}
+
+$baselineViolations = New-Object System.Collections.Generic.List[string]
+$baselineImprovements = New-Object System.Collections.Generic.List[string]
+
+if ($null -eq $baselineRules) {
+    Write-Host "No baseline file at $BaselinePath; per-rule comparison skipped."
+} else {
+    $baselineNames = $baselineRules.PSObject.Properties.Name
+
+    foreach ($group in $byRule) {
+        $allowed = 0
+        if ($baselineNames -contains $group.Name) {
+            $allowed = [int]$baselineRules.($group.Name)
+        }
+
+        if ($group.Count -gt $allowed) {
+            $baselineViolations.Add(("{0}: {1} findings, baseline {2}" -f $group.Name, $group.Count, $allowed))
+        } elseif ($group.Count -lt $allowed) {
+            $baselineImprovements.Add(("{0}: {1} findings, baseline {2}" -f $group.Name, $group.Count, $allowed))
+        }
+    }
+
+    $presentNames = @($byRule | ForEach-Object { $_.Name })
+    foreach ($name in $baselineNames) {
+        if ($presentNames -notcontains $name -and [int]$baselineRules.$name -gt 0) {
+            $baselineImprovements.Add(("{0}: 0 findings, baseline {1}" -f $name, [int]$baselineRules.$name))
+        }
+    }
+
+    foreach ($violation in $baselineViolations) {
+        Write-Host ("ABOVE_BASELINE: " + $violation)
+    }
+
+    # Below baseline is not a failure. It means the number in the baseline file
+    # can be lowered, which is how the count ratchets down.
+    foreach ($improvement in $baselineImprovements) {
+        Write-Host ("BELOW_BASELINE (lower the baseline): " + $improvement)
+    }
+}
+
 $blocking = 0
 switch ($FailOnSeverity) {
     'Error' { $blocking = $errorCount }
@@ -73,7 +127,7 @@ switch ($FailOnSeverity) {
 
 $summary = [pscustomobject][ordered]@{
     check = 'script-analyzer'
-    success = $blocking -eq 0
+    success = ($blocking -eq 0) -and ($baselineViolations.Count -eq 0)
     powershell_version = $PSVersionTable.PSVersion.ToString()
     analyzer_version = $analyzerModule.Version.ToString()
     fail_on_severity = $FailOnSeverity
@@ -81,6 +135,10 @@ $summary = [pscustomobject][ordered]@{
     warning_count = $warningCount
     information_count = $informationCount
     blocking_count = $blocking
+    baseline_path = $BaselinePath
+    baseline_loaded = ($null -ne $baselineRules)
+    above_baseline = $baselineViolations.ToArray()
+    below_baseline = $baselineImprovements.ToArray()
     findings_per_rule = @($byRule | ForEach-Object {
         [pscustomobject][ordered]@{ rule = $_.Name; count = $_.Count }
     })
@@ -88,6 +146,6 @@ $summary = [pscustomobject][ordered]@{
 }
 $summary | ConvertTo-Json -Depth 4
 
-if ($blocking -gt 0) {
+if ($blocking -gt 0 -or $baselineViolations.Count -gt 0) {
     exit 1
 }
