@@ -73,9 +73,9 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 | `Warning/PSUseSingularNouns` | 16 |
 | `Warning/PSAvoidAssignmentToAutomaticVariable` | 12 |
 | `Warning/PSAvoidUsingWriteHost` | 0 |
-| `Warning/PSReviewUnusedParameter` | 8 |
+| `Warning/PSReviewUnusedParameter` | 7 |
 | `Warning/PSAvoidUsingEmptyCatchBlock` | 8 |
-| `Warning/PSUseDeclaredVarsMoreThanAssignments` | 5 |
+| `Warning/PSUseDeclaredVarsMoreThanAssignments` | 4 |
 | `Warning/PSAvoidUsingCmdletAliases` | 0 |
 | `Warning/PSUseApprovedVerbs` | 1 |
 
