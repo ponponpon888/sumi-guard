@@ -48,6 +48,7 @@ function Get-SumiGuardAssessmentOriginText {
     switch ($Code) {
         'SYNTHETIC_TEST' { return '試験データ' }
         'MANAGED_EXECUTION' { return '管理下実行の評価' }
+        'CODEX_PRETOOLUSE_HOOK' { return 'フック経由の実行前評価' }
         default { return '説明未定義 [' + $Code + ']' }
     }
 }
@@ -149,6 +150,9 @@ function Invoke-SumiGuardAssessmentDisplay {
     Write-Output ('種別: ' + (Get-SumiGuardAssessmentOriginText -Code $record.evaluation_origin))
     if ($record.evaluation_origin -ceq 'SYNTHETIC_TEST') {
         Write-Output '注意: 試験データです。実際に実行された操作の記録ではありません。'
+    }
+    elseif ($record.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') {
+        Write-Output '注意: 実行前のフックが評価した記録です。実行されたかどうかは、この記録では確認できません。'
     }
     else {
         Write-Output '注意: 評価記録です。この記録だけでは実行状態を確認できません。'

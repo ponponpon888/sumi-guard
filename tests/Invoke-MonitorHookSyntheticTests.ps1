@@ -302,7 +302,16 @@ try {
         $script:stage = 'add/DETECTED_RECORD_LINKED_TO_EXECUTION_ID'
         Add-Result 'DETECTED_RECORD_LINKED_TO_EXECUTION_ID' (
             ([string](Get-RunField -Run $detected -Name 'store_text')).Contains([string](Get-DetailField -Run $detected -Name 'execution_id')) -and
-            [string](Get-DetailField -Run $detected -Name 'evaluation_origin') -ceq 'MANAGED_EXECUTION') -Observed $detectedDiagnostic
+            [string](Get-DetailField -Run $detected -Name 'evaluation_origin') -ceq 'CODEX_PRETOOLUSE_HOOK') -Observed $detectedDiagnostic
+
+        # The origin has to be in the stored record, not only in the hook's own
+        # report, or a reader still cannot tell a hook record from a
+        # managed-runner record.
+        $script:stage = 'add/STORED_RECORD_DECLARES_HOOK_ORIGIN'
+        $detectedStoreText = [string](Get-RunField -Run $detected -Name 'store_text')
+        Add-Result 'STORED_RECORD_DECLARES_HOOK_ORIGIN' (
+            $detectedStoreText.Contains('"evaluation_origin":"CODEX_PRETOOLUSE_HOOK"') -and
+            -not $detectedStoreText.Contains('MANAGED_EXECUTION')) -Observed $detectedDiagnostic
 
         # The same detection with a canary appended as a comment. A comment is not a
         # call, so the state stays the same, and the canary must not reach any output.

@@ -9,6 +9,13 @@ $script:DefaultMaximumBytes = 1048576
 $script:Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
 $script:SumiGuardAssessmentStoreTestForceAtomicWriteFailure = $false
 
+# The accepted values of evaluation_origin, and which of them require a related
+# execution record. SYNTHETIC_TEST must not carry one, so test data can never be
+# mistaken for a record of something that ran. Every other origin must carry one,
+# because the whole value of the record is that it points at a specific execution.
+$script:EvaluationOrigins = @('SYNTHETIC_TEST', 'MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK')
+$script:EvaluationOriginsRequiringExecutionId = @('MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK')
+
 function New-SumiGuardAssessmentStoreResult {
     param(
         [Parameter(Mandatory = $true)][bool]$Success,
@@ -361,7 +368,7 @@ function ConvertTo-SumiGuardAssessmentRecordForSave {
         -not (Test-SumiGuardKnownAssessmentReason -Status $status -Reason $Assessment.assessment_reason_code)) {
         Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
     }
-    if ($EvaluationOrigin -cnotin @('SYNTHETIC_TEST', 'MANAGED_EXECUTION') -or
+    if ($EvaluationOrigin -cnotin $script:EvaluationOrigins -or
         $AssessmentScope -cne 'WINDOWS_POWERSHELL_COMMAND_V1') {
         Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
     }
@@ -464,7 +471,8 @@ function ConvertFrom-SumiGuardStoredAssessmentRecord {
     if ([string]$Record.evaluation_origin -ceq 'SYNTHETIC_TEST' -and $null -ne $executionId) {
         Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
     }
-    if ([string]$Record.evaluation_origin -ceq 'MANAGED_EXECUTION' -and $null -eq $executionId) {
+    if ([string]$Record.evaluation_origin -cin $script:EvaluationOriginsRequiringExecutionId -and
+        $null -eq $executionId) {
         Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
     }
     $inputFindings = @()

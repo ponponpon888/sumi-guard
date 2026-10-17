@@ -33,11 +33,15 @@ param(
     # UNASSESSABLE / UNSUPPORTED_LANGUAGE instead of being guessed from the text.
     [switch]$TrustedWindowsPowerShellRoute,
 
-    # The assessment store accepts SYNTHETIC_TEST and MANAGED_EXECUTION only. It
-    # has no value for "assessed by a Codex PreToolUse hook", so an operational
-    # record is currently indistinguishable from a managed-runner record. Adding
-    # one is a store change and is left to an explicit decision.
-    [ValidateSet('MANAGED_EXECUTION')][string]$EvaluationOrigin = 'MANAGED_EXECUTION',
+    # CODEX_PRETOOLUSE_HOOK records that this assessment was made by a Codex
+    # PreToolUse hook, which is a weaker claim than MANAGED_EXECUTION: the hook
+    # sees the command before it runs but does not run it, so the record says
+    # what was about to be executed, not what the managed runner executed.
+    # Keeping them apart in the store is what lets a reader tell the two apart.
+    # MANAGED_EXECUTION stays selectable for an operator who routes this script
+    # from the managed runner instead of from a hook.
+    [ValidateSet('CODEX_PRETOOLUSE_HOOK', 'MANAGED_EXECUTION')]
+    [string]$EvaluationOrigin = 'CODEX_PRETOOLUSE_HOOK',
 
     # Writes the detailed result as JSON. The hook response on standard output
     # stays a single systemMessage either way.

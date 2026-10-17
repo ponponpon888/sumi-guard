@@ -143,6 +143,12 @@ try {
     $managed = Invoke-SumiGuardSyntheticAssessment `
         -CommandText "Write-Output 'managed fixed sample'" `
         -ExecutionId '00000000000000000000000000000016'
+    $hookAssessed = Invoke-SumiGuardSyntheticAssessment `
+        -CommandText "Write-Output 'hook fixed sample'" `
+        -ExecutionId '00000000000000000000000000000017'
+    $hookUnlinked = Invoke-SumiGuardSyntheticAssessment `
+        -CommandText "Write-Output 'hook unlinked sample'" `
+        -ExecutionId '00000000000000000000000000000018'
 
     $secretMarker = 'SYNTHETIC_SECRET_56a07f'
     $urlMarker = 'https://example.invalid/private?token=SYNTHETIC_TOKEN_84'
@@ -213,6 +219,73 @@ try {
         Assert-SumiGuardAssessmentStoreTest `
             ($read.records[0].execution_id -ceq '00000000000000000000000000000016') `
             'MANAGED_EXECUTION_ID'
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'HOOK_ORIGIN_IS_SEPARATE_AND_NEEDS_RELATION' -Body {
+        $save = Save-SumiGuardAssessment `
+            -StorePath $mainStore `
+            -Assessment $hookAssessed `
+            -EvaluationOrigin 'CODEX_PRETOOLUSE_HOOK' `
+            -RelatedExecutionId '00000000000000000000000000000017'
+        Assert-SumiGuardAssessmentStoreTest ($save.success) 'HOOK_SAVE'
+        $read = Get-SumiGuardAssessmentRecord `
+            -StorePath $mainStore `
+            -AssessmentId $hookAssessed.record_id
+        Assert-SumiGuardAssessmentStoreTest ($read.success) 'HOOK_READ'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($read.records[0].evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') `
+            'HOOK_ORIGIN'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($read.records[0].execution_id -ceq '00000000000000000000000000000017') `
+            'HOOK_EXECUTION_ID'
+
+        # The reason the value exists: in one store, a record written by the
+        # pre-execution hook and a record written by the managed runner stay
+        # separable instead of both reading as MANAGED_EXECUTION.
+        $all = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        Assert-SumiGuardAssessmentStoreTest ($all.success) 'HOOK_READ_ALL'
+        Assert-SumiGuardAssessmentStoreTest `
+            (@($all.records | Where-Object {
+                $_.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK' }).Count -eq 1) `
+            'HOOK_ORIGIN_COUNT'
+        Assert-SumiGuardAssessmentStoreTest `
+            (@($all.records | Where-Object {
+                $_.evaluation_origin -ceq 'MANAGED_EXECUTION' }).Count -eq 1) `
+            'MANAGED_ORIGIN_STILL_SEPARATE'
+
+        $hookDisplay = Get-SumiGuardDisplayOutput `
+            -StorePath $mainStore `
+            -AssessmentId $hookAssessed.record_id
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.exit_code -eq 0) `
+            'HOOK_DISPLAY_EXIT_CODE'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.text.Contains('フック経由の実行前評価')) `
+            'HOOK_DISPLAY_LABEL'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.text.Contains('実行されたかどうかは、この記録では確認できません')) `
+            'HOOK_DISPLAY_EXECUTION_UNKNOWN_NOTICE'
+        Assert-SumiGuardAssessmentStoreTest `
+            (-not $hookDisplay.text.Contains('説明未定義')) `
+            'HOOK_DISPLAY_HAS_NO_UNDEFINED_LABEL'
+
+        # Without a related execution the record would point at nothing, so it is
+        # rejected rather than stored as an unlinked claim.
+        $before = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        $unlinked = Save-SumiGuardAssessment `
+            -StorePath $mainStore `
+            -Assessment $hookUnlinked `
+            -EvaluationOrigin 'CODEX_PRETOOLUSE_HOOK'
+        $after = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        Assert-SumiGuardAssessmentStoreTest `
+            (-not $unlinked.success) `
+            'HOOK_UNLINKED_SUCCESS_FALSE'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($unlinked.status -ceq 'INVALID_ASSESSMENT') `
+            'HOOK_UNLINKED_STATUS'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($after.record_count -eq $before.record_count) `
+            'HOOK_UNLINKED_NOT_STORED'
     }
 
     Invoke-SumiGuardAssessmentStoreTestCase -Name 'DUPLICATE_ID_IS_REJECTED' -Body {

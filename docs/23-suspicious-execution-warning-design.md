@@ -17,25 +17,43 @@
 | 2. 評価保存 | 実装済み | `src/SumiGuard.AssessmentStore/`、`tests/Invoke-AssessmentStoreTests.ps1` |
 | 3. 隔離フック接続 | 実装済み | `kit/sumi-guard-command-assessment-hook-test/`、`kit/sumi-guard-hook-assessment-store-test/` |
 | 4. 読取り表示 | 実装済み | `tools/Show-SumiGuardAssessments.ps1` |
-| 5. 限定MONITOR | **フック実装済み、合成試験20判定がCIで成功、運用端末未検証** | `hooks/Invoke-SumiGuardMonitorHook.ps1`、`tests/Invoke-MonitorHookSyntheticTests.ps1`、`measurements/2026-10-17-monitor-hook-synthetic-tests.md` |
+| 5. 限定MONITOR | **フック実装済み、合成試験21判定がCIで成功、運用端末未検証** | `hooks/Invoke-SumiGuardMonitorHook.ps1`、`tests/Invoke-MonitorHookSyntheticTests.ps1`、`measurements/2026-10-17-monitor-hook-synthetic-tests.md`、`measurements/2026-10-17-assessment-origin-hook-value.md` |
 | 6. ルール拡張 | 未着手 | 誤検知測定とレビューが前提 |
 
 段階5のフックは、本書の「新しい運用用フックのPre処理順」1〜5をそのまま実装している。
-合成試験20判定はCIの Windows PowerShell 5.1 で成功しており、検知・状態の分離・失敗時の扱い・
+合成試験21判定はCIの Windows PowerShell 5.1 で成功しており、検知・状態の分離・失敗時の扱い・
 カナリア非漏洩・MONITOR応答までを確認した（`measurements/2026-10-17-monitor-hook-synthetic-tests.md`）。
 ただし**本文保存の実経路（DPAPI CurrentUser）は検証していない**。試験は
 `-TestIntentSaveOutcome` で `SumiGuard.ExecutionAdapter` の呼出しを置き換えており、実経路の
 検証は運用端末での測定が必要である。恒久登録も行っていない。
 
+### 決定事項: フック記録の `evaluation_origin`（2026-10-17）
+
+`SumiGuard.AssessmentStore` の `evaluation_origin` に `CODEX_PRETOOLUSE_HOOK` を追加した。
+追加前は `SYNTHETIC_TEST` と `MANAGED_EXECUTION` の2値しか無く、運用フックが保存した記録は
+管理ランナーが保存した記録と区別できなかった。両者は主張の強さが違う。管理ランナーの記録は
+「この経路で実行した」ことに対応するが、フックの記録は「実行前にこの内容を評価した」までで、
+実行されたかどうかは含まない。記録を読む側がこの違いを判別できないこと自体が、監査記録としての
+欠陥であるため、暫定の `MANAGED_EXECUTION` 流用をやめ、値を分けた。
+
+| 項目 | 決定 |
+|---|---|
+| 追加した値 | `CODEX_PRETOOLUSE_HOOK` |
+| 関連実行IDの要否 | 必須。`MANAGED_EXECUTION` と同じ扱いとし、関連実行IDが無い保存は `INVALID_ASSESSMENT` で拒否する |
+| `SYNTHETIC_TEST` の扱い | 変更なし。関連実行IDを持ってはならない（試験データが実行記録に見えないため） |
+| 既存記録 | 変更しない。保存層の追加のみで、既存2値の条件は緩めていない |
+| 表示 | `tools/Show-SumiGuardAssessments.ps1` に「フック経由の実行前評価」と、実行有無が確認できない旨の注意文を追加した |
+| フックの既定値 | `-EvaluationOrigin` の既定を `CODEX_PRETOOLUSE_HOOK` にした。管理ランナーから起動する運用のために `MANAGED_EXECUTION` も選択できる |
+
+検証は `tests/Invoke-AssessmentStoreTests.ps1` の `HOOK_ORIGIN_IS_SEPARATE_AND_NEEDS_RELATION`
+（保存・読戻し・同一ストア内での2値の分離・表示文・関連実行ID欠落時の拒否）と、
+`tests/Invoke-MonitorHookSyntheticTests.ps1` の `STORED_RECORD_DECLARES_HOOK_ORIGIN`
+（フック自身の報告ではなく、保存された記録の中に値があること）で行った。
+測定は `measurements/2026-10-17-assessment-origin-hook-value.md` に記録した。
+
 ### 実装で判明した、設計側の未決事項
 
-`SumiGuard.AssessmentStore` の `evaluation_origin` は `SYNTHETIC_TEST` と `MANAGED_EXECUTION` の
-2値しか受け付けない。「Codex PreToolUse フックが評価した」を表す値が無いため、運用フックが
-保存したレコードは、管理ランナーが保存したレコードと区別できない。フックは暫定的に
-`MANAGED_EXECUTION` を使っている。`CODEX_PRETOOLUSE_HOOK` を足すかどうかは保存層の変更に
-なるため、判断を保留している。
-
-また、フックは評価保存先のストアを自分では作らない。ストアが無ければ保存は失敗し、
+フックは評価保存先のストアを自分では作らない。ストアが無ければ保存は失敗し、
 `ASSESSMENT_STORE_FAILED` の通知を書く。初期化は運用側の手順とする。
 
 ### 実装中に踏んだ 5.1 固有の挙動（2件）
