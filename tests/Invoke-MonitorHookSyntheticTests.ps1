@@ -326,6 +326,7 @@ catch {
     $failure = [pscustomobject][ordered]@{
         stage = 'TOP_LEVEL'
         exception_type = $_.Exception.GetType().FullName
+        target = [string]$_.CategoryInfo.TargetName
     }
 }
 finally {
@@ -334,9 +335,16 @@ finally {
     }
 
     $failed = @($results | Where-Object { -not $_.pass })
+    # failure_stage and failure_exception_type are flattened to the top level,
+    # the same shape the other tests in this repository use, so a runner can put
+    # them in its failure line. A test that stops on an exception otherwise
+    # reports an empty failed-case list and says nothing about why.
     $summary = [pscustomobject][ordered]@{
         success = ($failed.Count -eq 0 -and $null -eq $failure)
         powershell_version = $PSVersionTable.PSVersion.ToString()
+        failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
+        failure_exception_type = $(if ($null -eq $failure) { $null } else { [string]$failure.exception_type })
+        last_completed_case = $(if ($results.Count -eq 0) { $null } else { [string]$results[$results.Count - 1].name })
         test_count = $results.Count
         passed_count = $results.Count - $failed.Count
         failed_count = $failed.Count
