@@ -104,7 +104,7 @@ function Get-SumiGuardTestDiagnostic {
 
     $parts = New-Object System.Collections.Generic.List[string]
     $names = $Summary.PSObject.Properties.Name
-    foreach ($field in @('failure_stage', 'failure_exception_type', 'last_completed_case', 'test_count', 'passed_count', 'failed_cases')) {
+    foreach ($field in @('failure_stage', 'failure_line', 'failure_exception_type', 'last_completed_case', 'test_count', 'passed_count', 'failed_cases')) {
         if ($names -contains $field) {
             $value = $Summary.$field
             if ($null -ne $value -and "$value" -ne '') {

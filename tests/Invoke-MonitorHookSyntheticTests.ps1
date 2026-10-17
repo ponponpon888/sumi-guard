@@ -234,6 +234,7 @@ try {
     foreach ($pattern in $forbidden) {
         if ($hookSource.Contains($pattern)) { $sourceClean = $false }
     }
+    $script:stage = 'add/HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT'
     Add-Result 'HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT' $sourceClean
 
     # Detection on a trusted route.
@@ -241,6 +242,7 @@ try {
     $detected = Invoke-Hook -CaseName 'detected' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command 'Set-MpPreference -DisableRealtimeMonitoring $true')
     $detectedDiagnostic = Get-ObservedDiagnostic -Run $detected
+    $script:stage = 'add/TRUSTED_ROUTE_DETECTED'
     Add-Result 'TRUSTED_ROUTE_DETECTED' (
         [string](Get-DetailField -Run $detected -Name 'assessment_status') -ceq 'DETECTED' -and
         [string](Get-DetailField -Run $detected -Name 'assessment_storage_status') -ceq 'SAVED' -and
@@ -248,7 +250,9 @@ try {
         [bool](Get-DetailField -Run $detected -Name 'interpreter_verified') -and
         $detectedDiagnostic.findings_count -eq 1 -and
         @($detectedDiagnostic.rule_ids) -ccontains 'SG-CMD-002') -Observed $detectedDiagnostic
+    $script:stage = 'add/DETECTED_IS_MONITOR_ONLY'
     Add-Result 'DETECTED_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $detected) -Observed $detectedDiagnostic
+    $script:stage = 'add/DETECTED_RECORD_LINKED_TO_EXECUTION_ID'
     Add-Result 'DETECTED_RECORD_LINKED_TO_EXECUTION_ID' (
         $detected.store_text.Contains([string](Get-DetailField -Run $detected -Name 'execution_id')) -and
         [string](Get-DetailField -Run $detected -Name 'evaluation_origin') -ceq 'MANAGED_EXECUTION') -Observed $detectedDiagnostic
@@ -259,9 +263,11 @@ try {
     $canaryRun = Invoke-Hook -CaseName 'canary' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command "Set-MpPreference -DisableRealtimeMonitoring `$true # $canary")
     $canaryDiagnostic = Get-ObservedDiagnostic -Run $canaryRun
+    $script:stage = 'add/TRAILING_COMMENT_DOES_NOT_CHANGE_STATE'
     Add-Result 'TRAILING_COMMENT_DOES_NOT_CHANGE_STATE' (
         [string](Get-DetailField -Run $canaryRun -Name 'assessment_status') -ceq [string](Get-DetailField -Run $detected -Name 'assessment_status') -and
         $canaryDiagnostic.findings_count -eq $detectedDiagnostic.findings_count) -Observed $canaryDiagnostic
+    $script:stage = 'add/NO_CONTENT_LEAK'
     Add-Result 'NO_CONTENT_LEAK' (
         (-not $canaryRun.stdout_text.Contains($canary)) -and
         (-not $canaryRun.store_text.Contains($canary)) -and
@@ -272,17 +278,20 @@ try {
     $script:stage = 'assert/unverified'
     $unverified = Invoke-Hook -CaseName 'unverified' `
         -EventJson (Get-HookEventJson -Command 'Set-MpPreference -DisableRealtimeMonitoring $true')
+    $script:stage = 'add/UNVERIFIED_ROUTE_IS_UNASSESSABLE'
     Add-Result 'UNVERIFIED_ROUTE_IS_UNASSESSABLE' (
         [string](Get-DetailField -Run $unverified -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
         [string](Get-DetailField -Run $unverified -Name 'assessment').assessment_reason_code -ceq 'UNSUPPORTED_LANGUAGE' -and
         [string](Get-DetailField -Run $unverified -Name 'assessment_storage_status') -ceq 'SAVED' -and
         (-not [bool](Get-DetailField -Run $unverified -Name 'interpreter_verified'))) -Observed (Get-ObservedDiagnostic -Run $unverified)
+    $script:stage = 'add/UNVERIFIED_ROUTE_IS_MONITOR_ONLY'
     Add-Result 'UNVERIFIED_ROUTE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $unverified)
 
     # A query is not a registration, so the same vocabulary does not detect.
     $script:stage = 'assert/query'
     $query = Invoke-Hook -CaseName 'query' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command "Get-ScheduledTask -TaskName 'Synthetic'")
+    $script:stage = 'add/QUERY_IS_NO_DETECTION'
     Add-Result 'QUERY_IS_NO_DETECTION' (
         [string](Get-DetailField -Run $query -Name 'assessment_status') -ceq 'NO_DETECTION' -and
         [string](Get-DetailField -Run $query -Name 'assessment_storage_status') -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $query)
@@ -290,18 +299,21 @@ try {
     # Malformed event: nothing is stored and nothing is denied.
     $script:stage = 'assert/invalid'
     $invalid = Invoke-Hook -CaseName 'invalid' -TrustedRoute -EventJson '{invalid'
+    $script:stage = 'add/INVALID_INPUT_STORES_NOTHING'
     Add-Result 'INVALID_INPUT_STORES_NOTHING' (
         [string](Get-DetailField -Run $invalid -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
         [string](Get-DetailField -Run $invalid -Name 'assessment_storage_status') -ceq 'NOT_ATTEMPTED' -and
         [string](Get-DetailField -Run $invalid -Name 'intent_storage_status') -ceq 'NOT_ATTEMPTED' -and
         [string](Get-DetailField -Run $invalid -Name 'interpreter_reason_code') -ceq 'HOOK_INPUT_INVALID' -and
         $invalid.store_text.Length -eq 0) -Observed (Get-ObservedDiagnostic -Run $invalid)
+    $script:stage = 'add/INVALID_INPUT_IS_MONITOR_ONLY'
     Add-Result 'INVALID_INPUT_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $invalid)
 
     # Only PreToolUse is an entry point for assessment.
     $script:stage = 'assert/post'
     $post = Invoke-Hook -CaseName 'post' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command 'Get-Date' -HookEventName 'PostToolUse')
+    $script:stage = 'add/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
     Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' (
         [string](Get-DetailField -Run $post -Name 'hook_status') -ceq 'INVALID_HOOK_INPUT' -and
         $post.store_text.Length -eq 0)
@@ -311,10 +323,12 @@ try {
     $script:stage = 'assert/evaluation-failed'
     $evaluationFailed = Invoke-Hook -CaseName 'evaluation-failed' -TrustedRoute -ForceEvaluationFailure `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
+    $script:stage = 'add/EVALUATION_FAILURE_STILL_SAVES_INTENT_AND_RECORD'
     Add-Result 'EVALUATION_FAILURE_STILL_SAVES_INTENT_AND_RECORD' (
         [string](Get-DetailField -Run $evaluationFailed -Name 'assessment_status') -ceq 'EVALUATION_FAILED' -and
         [string](Get-DetailField -Run $evaluationFailed -Name 'assessment_storage_status') -ceq 'SAVED' -and
         [string](Get-DetailField -Run $evaluationFailed -Name 'intent_storage_status') -ceq 'TEST_DOUBLE_SAVED') -Observed (Get-ObservedDiagnostic -Run $evaluationFailed)
+    $script:stage = 'add/EVALUATION_FAILURE_IS_MONITOR_ONLY'
     Add-Result 'EVALUATION_FAILURE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $evaluationFailed)
 
     # The two stores are not one transaction: a failed intent save still leaves
@@ -322,6 +336,7 @@ try {
     $script:stage = 'assert/intent-failed'
     $intentFailed = Invoke-Hook -CaseName 'intent-failed' -TrustedRoute -IntentOutcome 'TEST_FAILURE' `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
+    $script:stage = 'add/INTENT_FAILURE_STILL_SAVES_ASSESSMENT'
     Add-Result 'INTENT_FAILURE_STILL_SAVES_ASSESSMENT' (
         [string](Get-DetailField -Run $intentFailed -Name 'intent_storage_status') -ceq 'TEST_DOUBLE_IO_ERROR' -and
         [string](Get-DetailField -Run $intentFailed -Name 'assessment_storage_status') -ceq 'SAVED' -and
@@ -332,6 +347,7 @@ try {
     $script:stage = 'assert/intent-threw'
     $intentThrew = Invoke-Hook -CaseName 'intent-threw' -TrustedRoute -IntentOutcome 'TEST_THROW' `
         -EventJson (Get-HookEventJson -Command 'Get-Date')
+    $script:stage = 'add/INTENT_EXCEPTION_IS_NOT_A_SILENT_SUCCESS'
     Add-Result 'INTENT_EXCEPTION_IS_NOT_A_SILENT_SUCCESS' (
         [string](Get-DetailField -Run $intentThrew -Name 'intent_storage_status') -ceq 'INTENT_STORE_FAILED' -and
         [string](Get-DetailField -Run $intentThrew -Name 'assessment_storage_status') -ceq 'SAVED' -and
@@ -342,11 +358,13 @@ try {
     $script:stage = 'assert/assessment-save-failed'
     $saveFailed = Invoke-Hook -CaseName 'assessment-save-failed' -TrustedRoute -ForceAssessmentSaveFailure `
         -EventJson (Get-HookEventJson -Command "Set-MpPreference -DisableRealtimeMonitoring `$true")
+    $script:stage = 'add/ASSESSMENT_SAVE_FAILURE_IS_DISTINCT'
     Add-Result 'ASSESSMENT_SAVE_FAILURE_IS_DISTINCT' (
         [string](Get-DetailField -Run $saveFailed -Name 'assessment_status') -ceq 'DETECTED' -and
         [string](Get-DetailField -Run $saveFailed -Name 'assessment_storage_status') -cne 'SAVED' -and
         [string](Get-DetailField -Run $saveFailed -Name 'notice_status') -ceq 'NOTICE_WRITTEN' -and
         $saveFailed.notice_text.Contains('ASSESSMENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $saveFailed)
+    $script:stage = 'add/ASSESSMENT_SAVE_FAILURE_IS_MONITOR_ONLY'
     Add-Result 'ASSESSMENT_SAVE_FAILURE_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $saveFailed)
 
     # The execution id is derived from the event identity only.
@@ -359,6 +377,7 @@ try {
     $script:stage = 'assert/id-third'
     $third = Invoke-Hook -CaseName 'id-third' -TrustedRoute `
         -EventJson (Get-HookEventJson -Command 'Get-Date' -ToolUseId 'tool-use-other')
+    $script:stage = 'add/EXECUTION_ID_IS_DETERMINISTIC_AND_IDENTITY_ONLY'
     Add-Result 'EXECUTION_ID_IS_DETERMINISTIC_AND_IDENTITY_ONLY' (
         [string](Get-DetailField -Run $first -Name 'execution_id') -ceq [string](Get-DetailField -Run $second -Name 'execution_id') -and
         [string](Get-DetailField -Run $first -Name 'execution_id') -cne [string](Get-DetailField -Run $third -Name 'execution_id') -and
@@ -367,6 +386,7 @@ try {
     # An empty command is a state, not a detection.
     $script:stage = 'assert/empty'
     $empty = Invoke-Hook -CaseName 'empty' -TrustedRoute -EventJson (Get-HookEventJson -Command '')
+    $script:stage = 'add/EMPTY_COMMAND_IS_UNASSESSABLE'
     Add-Result 'EMPTY_COMMAND_IS_UNASSESSABLE' (
         [string](Get-DetailField -Run $empty -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
         [string](Get-DetailField -Run $empty -Name 'assessment').assessment_reason_code -ceq 'CONTENT_UNAVAILABLE' -and
@@ -377,6 +397,7 @@ catch {
         stage = [string]$script:stage
         exception_type = $_.Exception.GetType().FullName
         target = [string]$_.CategoryInfo.TargetName
+        script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
     }
 }
 finally {
@@ -393,6 +414,7 @@ finally {
         success = ($failed.Count -eq 0 -and $null -eq $failure)
         powershell_version = $PSVersionTable.PSVersion.ToString()
         failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
+        failure_line = $(if ($null -eq $failure) { $null } else { [int]$failure.script_line_number })
         failure_exception_type = $(if ($null -eq $failure) { $null } else { [string]$failure.exception_type })
         last_completed_case = $(if ($results.Count -eq 0) { $null } else { [string]$results[$results.Count - 1].name })
         test_count = $results.Count
