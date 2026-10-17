@@ -1,4 +1,4 @@
-# SUMI Guard 不審実行の検知・警告設計
+﻿# SUMI Guard 不審実行の検知・警告設計
 
 ## 文書の位置付け
 
@@ -8,6 +8,33 @@
 
 本書の追加時点では検知機能を実装していない。既存の検証済みフック試験スクリプト、
 `SumiGuard.ExecutionAdapter`、`SumiGuard.LocalStore`、通常版Show、ReadOnly派生版には変更を加えない。
+
+## 実装状況（2026-10-17）
+
+| 段階 | 状態 | 実体 |
+|---|---|---|
+| 1. 純粋評価器 | 実装済み | `src/SumiGuard.CommandAssessment/`、`tests/Invoke-CommandAssessmentTests.ps1` |
+| 2. 評価保存 | 実装済み | `src/SumiGuard.AssessmentStore/`、`tests/Invoke-AssessmentStoreTests.ps1` |
+| 3. 隔離フック接続 | 実装済み | `kit/sumi-guard-command-assessment-hook-test/`、`kit/sumi-guard-hook-assessment-store-test/` |
+| 4. 読取り表示 | 実装済み | `tools/Show-SumiGuardAssessments.ps1` |
+| 5. 限定MONITOR | **フック実装済み・運用端末未検証** | `hooks/Invoke-SumiGuardMonitorHook.ps1`、`tests/Invoke-MonitorHookSyntheticTests.ps1` |
+| 6. ルール拡張 | 未着手 | 誤検知測定とレビューが前提 |
+
+段階5のフックは、本書の「新しい運用用フックのPre処理順」1〜5をそのまま実装している。
+合成試験はCIの Windows PowerShell 5.1 で実行されるが、**本文保存の実経路（DPAPI CurrentUser）は
+検証していない**。試験は `-TestIntentSaveOutcome` で `SumiGuard.ExecutionAdapter` の呼出しを
+置き換えており、実経路の検証は運用端末での測定が必要である。恒久登録も行っていない。
+
+### 実装で判明した、設計側の未決事項
+
+`SumiGuard.AssessmentStore` の `evaluation_origin` は `SYNTHETIC_TEST` と `MANAGED_EXECUTION` の
+2値しか受け付けない。「Codex PreToolUse フックが評価した」を表す値が無いため、運用フックが
+保存したレコードは、管理ランナーが保存したレコードと区別できない。フックは暫定的に
+`MANAGED_EXECUTION` を使っている。`CODEX_PRETOOLUSE_HOOK` を足すかどうかは保存層の変更に
+なるため、判断を保留している。
+
+また、フックは評価保存先のストアを自分では作らない。ストアが無ければ保存は失敗し、
+`ASSESSMENT_STORE_FAILED` の通知を書く。初期化は運用側の手順とする。
 
 ## 基本原則
 

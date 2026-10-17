@@ -29,6 +29,8 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `src/SumiGuard.ExecutionAdapter/`: 実行前イベントと暗号化本文を `execution_id` で結ぶ接続モジュール
 - `tests/Invoke-LocalStoreTests.ps1`: ローカル保存モジュールの単体試験
 - `tests/Invoke-ExecutionAdapterIntegrationTests.ps1`: 合成イベントだけを使う接続統合試験
+- `hooks/Invoke-SumiGuardMonitorHook.ps1`: Codex PreToolUse を保存前に評価し、評価結果だけを別保存する運用フック（MONITOR、denyしない）
+- `tests/Invoke-MonitorHookSyntheticTests.ps1`: 運用フックの合成試験。固定文字列だけを渡し、本文保存の実経路は置き換える
 - `tools/Show-SumiGuardRecords.ps1`: 本文を復号しない保存済み記録の読み取り専用CLI
 - `src/SumiGuard.ExecutionAdapter/SumiGuard.ExecutionAdapter.ReadOnly.psm1`: 既存ロックを共有読取りで開くReadOnly派生モジュール
 - `tools/Show-SumiGuardRecords.ReadOnly.ps1`: ReadOnly派生モジュールを明示使用するCLI
