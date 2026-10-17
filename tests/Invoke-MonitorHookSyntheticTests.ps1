@@ -119,6 +119,12 @@ function Get-ObservedDiagnostic {
         }
     }
 
+    # Keep every value a plain string or number. A $null in the hashtable is the
+    # only thing the two cases without an assessment record had in common.
+    if ($null -eq $reasonCode) {
+        $reasonCode = ''
+    }
+
     return @{
         detail_present = $true
         run_count = $runCount
@@ -403,13 +409,14 @@ try {
         $invalidStoreText = [string](Get-RunField -Run $invalid -Name 'store_text')
         $script:stage = 'read/invalid/observed'
         $invalidObserved = Get-ObservedDiagnostic -Run $invalid
+        $script:stage = 'evaluate/INVALID_INPUT_STORES_NOTHING'
+        $invalidPass = ($invalidHookStatus -ceq 'INVALID_HOOK_INPUT') -and
+            ($invalidAssessmentStorage -ceq 'NOT_ATTEMPTED') -and
+            ($invalidIntentStorage -ceq 'NOT_ATTEMPTED') -and
+            ($invalidInterpreterReason -ceq 'HOOK_INPUT_INVALID') -and
+            ($invalidStoreText.Length -eq 0)
         $script:stage = 'add/INVALID_INPUT_STORES_NOTHING'
-        Add-Result 'INVALID_INPUT_STORES_NOTHING' (
-            $invalidHookStatus -ceq 'INVALID_HOOK_INPUT' -and
-            $invalidAssessmentStorage -ceq 'NOT_ATTEMPTED' -and
-            $invalidIntentStorage -ceq 'NOT_ATTEMPTED' -and
-            $invalidInterpreterReason -ceq 'HOOK_INPUT_INVALID' -and
-            $invalidStoreText.Length -eq 0) -Observed $invalidObserved
+        Add-Result 'INVALID_INPUT_STORES_NOTHING' $invalidPass -Observed $invalidObserved
         $script:stage = 'add/INVALID_INPUT_IS_MONITOR_ONLY'
         Add-Result 'INVALID_INPUT_IS_MONITOR_ONLY' (Test-MonitorOnlyResponse -Run $invalid)
 
@@ -435,10 +442,11 @@ try {
         $postStoreText = [string](Get-RunField -Run $post -Name 'store_text')
         $script:stage = 'read/post/observed'
         $postObserved = Get-ObservedDiagnostic -Run $post
+        $script:stage = 'evaluate/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
+        $postPass = ($postHookStatus -ceq 'INVALID_HOOK_INPUT') -and
+            ($postStoreText.Length -eq 0)
         $script:stage = 'add/POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT'
-        Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' (
-            $postHookStatus -ceq 'INVALID_HOOK_INPUT' -and
-            $postStoreText.Length -eq 0) -Observed $postObserved
+        Add-Result 'POST_TOOL_USE_IS_NOT_AN_ENTRY_POINT' $postPass -Observed $postObserved
 
         # The design requires the intent save to happen even when evaluation fails,
         # and a record to exist for EVALUATION_FAILED.
