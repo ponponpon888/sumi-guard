@@ -23,12 +23,13 @@ function New-SumiGuardManagedVerificationResult {
 # SELF_DECLARATION_NOT_TRUSTED in tests/Invoke-ManagedAssessmentVerificationTests.ps1
 # passes -CallerInterpreterVerified $true and asserts the result is still
 # unverified. Removing the parameter would remove the ability to test that.
-[Diagnostics.CodeAnalysis.SuppressMessageAttribute(
-    'PSReviewUnusedParameter',
-    '',
-    Justification = 'CallerInterpreterVerified is ignored by design: a caller declaration is not evidence of the target interpreter. A test passes it to prove it is ignored.')]
 function Test-SumiGuardManagedAssessmentEvidence {
-    [CmdletBinding()]param(
+    [CmdletBinding()]
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSReviewUnusedParameter',
+        '',
+        Justification = 'CallerInterpreterVerified is ignored by design: a caller declaration is not evidence of the target interpreter. A test passes it to prove it is ignored.')]
+    param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AssessmentCommandText,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$LaunchCommandText,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$AssessmentExecutionId,
