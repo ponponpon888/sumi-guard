@@ -1,4 +1,4 @@
-# 実フック入力のインタープリター確認経路
+﻿# 実フック入力のインタープリター確認経路
 
 ## 結論
 
@@ -7,6 +7,35 @@
 `tool_name=Bash`、フック自身を起動する `command_windows`、コマンド本文中の `powershell` 文字列、または利用者の「PowerShellとして評価してほしい」という宣言は、対象インタープリターの証明に用いない。
 
 実用化へ進む推奨経路は、既存の管理下Windows PowerShellランナーを基礎にした明示的な管理下実行である。Codex実フックの対象言語確認を解決済みとは扱わない。
+
+## 実装状況（2026-10-17）
+
+本書の「次の最小実装対象」4項目は、いずれも実装済みである。
+
+| 項目 | 実体 | 試験 | 測定記録 |
+|---|---|---|---|
+| 1. 本文を含まない評価入力エンベロープへ確認結果を渡す | `demo/Invoke-SumiGuardManagedAssessmentVerificationDemo.ps1` | `tests/Invoke-ManagedAssessmentVerificationConnectionTests.ps1`（20判定） | `measurements/2026-10-07-managed-assessment-verification-connection.md` |
+| 2. 本文・実行ファイル・版・起動設定・execution ID の一致を確認する純粋関数 | `src/SumiGuard.ManagedAssessmentVerification/` の `Test-SumiGuardManagedAssessmentEvidence` | `tests/Invoke-ManagedAssessmentVerificationTests.ps1`（12判定） | `measurements/2026-10-07-managed-assessment-verification.md` |
+| 3. 不一致・欠落・内側解釈不明を `InterpreterVerified=false` と固定の評価不能状態にする | 同上（`COMMAND_MISMATCH`、`ID_MISMATCH`、`EXECUTABLE_MISMATCH`、`VERSION_MISMATCH`、`CONFIGURATION_MISMATCH`、`MISSING_EVIDENCE`） | 同上 | 同上 |
+| 4. この経路でのみ評価ストアと日本語警告表示へ接続する | `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1`、`tools/Show-SumiGuardAssessments.ps1`（`MANAGED_EXECUTION` を「管理下実行の評価」と表示） | `tests/Invoke-ManagedAssessmentStoreDemoTests.ps1`（4判定） | `measurements/2026-10-05-managed-assessment-store-demo.md` |
+
+実フックへの保存・通知・遮断には接続していない。本書の結論どおり、実フック入力は
+`InterpreterKind=UNKNOWN` / `InterpreterVerified=false` のままである。
+docs/23 段階5の運用フック（`hooks/Invoke-SumiGuardMonitorHook.ps1`）も、信頼経路の宣言が
+無ければ `UNASSESSABLE / UNSUPPORTED_LANGUAGE` を返す。
+
+### 意図して使われていないパラメーター
+
+`Test-SumiGuardManagedAssessmentEvidence` の `$CallerInterpreterVerified` は、受け取ったうえで
+**一度も読まない**。本書の信頼境界が「利用者または上位層による言語宣言は根拠にできない」と
+しているため、宣言を渡しても結果が変わらないことを示すために存在する。
+`tests/Invoke-ManagedAssessmentVerificationTests.ps1` の `SELF_DECLARATION_NOT_TRUSTED` が
+`-CallerInterpreterVerified $true` を渡し、それでも `interpreter_verified` が false のままで
+あることを確認している。
+
+PSScriptAnalyzer はこれを `PSReviewUnusedParameter` として指摘するが、未使用であること自体が
+仕様である。削除すると「宣言が無視されること」を試験できなくなるため、コード側に理由を
+書いた `SuppressMessageAttribute` を付けて残した。
 
 ## 調査対象と根拠
 

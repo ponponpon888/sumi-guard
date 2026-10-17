@@ -12,7 +12,7 @@
     "Information/PSProvideCommentHelp": 19,
     "Warning/PSUseSingularNouns": 16,
     "Warning/PSAvoidAssignmentToAutomaticVariable": 12,
-    "Warning/PSReviewUnusedParameter": 9,
+    "Warning/PSReviewUnusedParameter": 8,
     "Warning/PSAvoidUsingWriteHost": 0,
     "Warning/PSAvoidUsingEmptyCatchBlock": 8,
     "Warning/PSUseDeclaredVarsMoreThanAssignments": 5,

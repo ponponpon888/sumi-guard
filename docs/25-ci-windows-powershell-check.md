@@ -108,7 +108,6 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 | 箇所 | 内容 | なぜ判断が必要か |
 |---|---|---|
 | `kit/sumi-guard-prototype/process-observer.ps1:3,4` | `-RootPidFile` と `-OutputPath` が **Mandatory なのに本体で未参照** | 呼び出し側が必ず渡す値を無視している。出力先の指定が効いていない可能性がある。READMEにSHA-256を記録した検証済みスクリプトであり、変更すると測定記録との対応が切れる |
-| `src/SumiGuard.ManagedAssessmentVerification/SumiGuard.ManagedAssessmentVerification.psm1:25` | `Test-SumiGuardManagedAssessmentEvidence` の `$CallerInterpreterVerified` が未参照 | インタプリタ検証の根拠を扱う関数が「呼び出し側は検証済みと言っている」という入力を無視している。削除はAPI変更、使用は判定の変更になる |
 | `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1:58` | `$EmitJapaneseDisplay` が未参照 | 渡しても何も起きないスイッチである。実装するか削除するかは仕様の判断 |
 | `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1:250` | `$bodySha256` を代入しているが読んでいない | 本文ハッシュを計算・取得して捨てている。このファイルは `measurements/2026-10-03-protected-hook-integration-test.md` と対応している |
 | `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石だが、保存層の変更になる |
@@ -126,6 +125,14 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
   `$null =` が定石だが動作は同じ。後者は検証済みスクリプト
 - **`$stderr` 2件**（`tests/Invoke-RealHookRunnerSyntheticTests.ps1:40,173`）。標準エラーを
   捕捉して判定に使っていない。判定を足すかは試験の仕様の判断
+- **`$CallerInterpreterVerified`**（`src/SumiGuard.ManagedAssessmentVerification/SumiGuard.ManagedAssessmentVerification.psm1:25`）。
+  **未使用であること自体が仕様である。** docs/24 の信頼境界が「上位層による言語宣言は根拠に
+  できない」としており、`tests/Invoke-ManagedAssessmentVerificationTests.ps1` の
+  `SELF_DECLARATION_NOT_TRUSTED` が `-CallerInterpreterVerified $true` を渡して、それでも
+  `interpreter_verified` が false のままであることを確認している。削除すると「宣言が無視される
+  こと」を試験できなくなる。理由を書いた `SuppressMessageAttribute` をコード側に付けて残し、
+  基準値を9から8へ下げた。当初このPRでは「判断が必要」に分類していたが、呼び出し側を確認して
+  誤りと分かったため訂正した
 - **試験の未使用パラメーター4件**（`tests/Invoke-ManagedAssessmentVerificationConnectionTests.ps1:49`
   の `body`・`eid`・`verified`、`tests/Invoke-PowerShellCommandCliTests.ps1:33,42` の `Unused`）。
   差し替え用スクリプトブロックの引数と、意図して未使用にしている引数である
