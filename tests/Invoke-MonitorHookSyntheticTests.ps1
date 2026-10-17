@@ -77,6 +77,22 @@ function Get-DetailField {
     return $detail.$Name
 }
 
+# Reads one field of the assessment record inside a hook result, tolerating an
+# absent record. A missing assessment is a state worth a failed assertion, not a
+# reason for the case to throw.
+function Get-AssessmentField {
+    param(
+        [Parameter(Mandatory = $true)][AllowNull()]$Run,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $assessment = Get-DetailField -Run $Run -Name 'assessment'
+    if ($null -eq $assessment) { return $null }
+    if (@($assessment.PSObject.Properties.Name) -notcontains $Name) { return $null }
+
+    return $assessment.$Name
+}
+
 function Get-ObservedDiagnostic {
     param([Parameter(Mandatory = $true)][AllowNull()]$Run)
 
@@ -260,8 +276,8 @@ try {
     Add-Result 'HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT' $sourceClean
 
     # Detection on a trusted route.
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/detected'
         $detected = Invoke-Hook -CaseName 'detected' -TrustedRoute `
@@ -286,15 +302,15 @@ try {
         # call, so the state stays the same, and the canary must not reach any output.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_DETECTED') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_DETECTED' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/canary'
         $canaryRun = Invoke-Hook -CaseName 'canary' -TrustedRoute `
@@ -314,15 +330,15 @@ try {
         # No trusted route: the interpreter is not guessed from the text.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_CANARY') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_CANARY' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/unverified'
         $unverified = Invoke-Hook -CaseName 'unverified' `
@@ -330,7 +346,7 @@ try {
         $script:stage = 'add/UNVERIFIED_ROUTE_IS_UNASSESSABLE'
         Add-Result 'UNVERIFIED_ROUTE_IS_UNASSESSABLE' (
             [string](Get-DetailField -Run $unverified -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
-            [string](Get-DetailField -Run $unverified -Name 'assessment').assessment_reason_code -ceq 'UNSUPPORTED_LANGUAGE' -and
+            [string](Get-AssessmentField -Run $unverified -Name 'assessment_reason_code') -ceq 'UNSUPPORTED_LANGUAGE' -and
             [string](Get-DetailField -Run $unverified -Name 'assessment_storage_status') -ceq 'SAVED' -and
             (-not [bool](Get-DetailField -Run $unverified -Name 'interpreter_verified'))) -Observed (Get-ObservedDiagnostic -Run $unverified)
         $script:stage = 'add/UNVERIFIED_ROUTE_IS_MONITOR_ONLY'
@@ -339,15 +355,15 @@ try {
         # A query is not a registration, so the same vocabulary does not detect.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_UNVERIFIED') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_UNVERIFIED' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/query'
         $query = Invoke-Hook -CaseName 'query' -TrustedRoute `
@@ -360,15 +376,15 @@ try {
         # Malformed event: nothing is stored and nothing is denied.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_QUERY') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_QUERY' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/invalid'
         $invalid = Invoke-Hook -CaseName 'invalid' -TrustedRoute -EventJson '{invalid'
@@ -385,15 +401,15 @@ try {
         # Only PreToolUse is an entry point for assessment.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_INVALID') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_INVALID' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/post'
         $post = Invoke-Hook -CaseName 'post' -TrustedRoute `
@@ -407,15 +423,15 @@ try {
         # and a record to exist for EVALUATION_FAILED.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_POST') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_POST' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/evaluation-failed'
         $evaluationFailed = Invoke-Hook -CaseName 'evaluation-failed' -TrustedRoute -ForceEvaluationFailure `
@@ -432,15 +448,15 @@ try {
         # the assessment, and the failure is noticed rather than implied away.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_EVALUATION_FAILED') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_EVALUATION_FAILED' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/intent-failed'
         $intentFailed = Invoke-Hook -CaseName 'intent-failed' -TrustedRoute -IntentOutcome 'TEST_FAILURE' `
@@ -454,15 +470,15 @@ try {
             ([string](Get-RunField -Run $intentFailed -Name 'notice_text')).Contains('INTENT_STORE_FAILED')) -Observed (Get-ObservedDiagnostic -Run $intentFailed)
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_INTENT_FAILED') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_INTENT_FAILED' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/intent-threw'
         $intentThrew = Invoke-Hook -CaseName 'intent-threw' -TrustedRoute -IntentOutcome 'TEST_THROW' `
@@ -477,15 +493,15 @@ try {
         # A failed assessment save is reported and noticed, not rounded to saved.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_INTENT_THREW') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_INTENT_THREW' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/assessment-save-failed'
         $saveFailed = Invoke-Hook -CaseName 'assessment-save-failed' -TrustedRoute -ForceAssessmentSaveFailure `
@@ -502,45 +518,45 @@ try {
         # The execution id is derived from the event identity only.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_ASSESSMENT_SAVE_FAILED') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_ASSESSMENT_SAVE_FAILED' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/id-first'
         $first = Invoke-Hook -CaseName 'id-first' -TrustedRoute `
             -EventJson (Get-HookEventJson -Command 'Get-Date' -ToolUseId 'tool-use-same')
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_ID_FIRST') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_ID_FIRST' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/id-second'
         $second = Invoke-Hook -CaseName 'id-second' -TrustedRoute `
             -EventJson (Get-HookEventJson -Command 'Get-ChildItem' -ToolUseId 'tool-use-same')
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_ID_SECOND') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_ID_SECOND' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/id-third'
         $third = Invoke-Hook -CaseName 'id-third' -TrustedRoute `
@@ -554,33 +570,33 @@ try {
         # An empty command is a state, not a detection.
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_ID_THIRD') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_ID_THIRD' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
-    # One case must not end the run: a case that throws is recorded as a failed
-    # case with the exception type and line, and the remaining cases still run.
+    # One case must not end the run: a case that throws is recorded as a
+    # failed case with its exception type and line, and the rest still run.
     try {
         $script:stage = 'assert/empty'
         $empty = Invoke-Hook -CaseName 'empty' -TrustedRoute -EventJson (Get-HookEventJson -Command '')
         $script:stage = 'add/EMPTY_COMMAND_IS_UNASSESSABLE'
         Add-Result 'EMPTY_COMMAND_IS_UNASSESSABLE' (
             [string](Get-DetailField -Run $empty -Name 'assessment_status') -ceq 'UNASSESSABLE' -and
-            [string](Get-DetailField -Run $empty -Name 'assessment').assessment_reason_code -ceq 'CONTENT_UNAVAILABLE' -and
+            [string](Get-AssessmentField -Run $empty -Name 'assessment_reason_code') -ceq 'CONTENT_UNAVAILABLE' -and
             [string](Get-DetailField -Run $empty -Name 'assessment_storage_status') -ceq 'SAVED') -Observed (Get-ObservedDiagnostic -Run $empty)
-        }
     }
     catch {
-        Add-Result ('CASE_EXCEPTION_EMPTY') $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_EMPTY' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
         }
     }
 
+}
 catch {
     $failure = [pscustomobject][ordered]@{
         stage = [string]$script:stage
