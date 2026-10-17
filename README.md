@@ -47,6 +47,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `.github/analyzer-baseline.json`: 現在抱えているルール別件数の基準値。超えたら失敗、下回ったら下げる
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
+- `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果
