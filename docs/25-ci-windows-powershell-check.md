@@ -157,8 +157,10 @@ CI側の不具合ではなく、作業端末の環境に依存していた箇所
   持たせ、試験ごとにどのプロパティを見るかを指定する形にした。
 
 `kit/sumi-guard-real-hook-assessment-check/Invoke-SumiGuardRealHookAssessmentCheck.ps1` にも
-同じ `C:\Dev\sumi-guard` の直書きが残っている。このスクリプトはCIの対象外（実フックとCodexを
-必要とする）ため、この変更では触っていない。
+同じ `C:\Dev\sumi-guard` の直書きがあり、こちらも `$PSScriptRoot` 相対へ変更した。ただし
+このスクリプトは実フックとCodexを必要とするためCIでは実行していない。CIが確認したのは構文と
+文字コードだけであり、**動作は運用端末での実行で確認する必要がある**。配置が
+`C:\Dev\sumi-guard` であれば解決結果は同じである。
 
 ## 制約
 
