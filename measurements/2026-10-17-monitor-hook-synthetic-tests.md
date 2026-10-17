@@ -20,7 +20,9 @@
 
 - 信頼経路を宣言した `Set-MpPreference -DisableRealtimeMonitoring $true` が
   `DETECTED` / `SG-CMD-002` / findings 1件になり、評価レコードが `execution_id` に紐づいて
-  保存される（`evaluation_origin=MANAGED_EXECUTION`）
+  保存される（`evaluation_origin=MANAGED_EXECUTION`。**この値はこの測定の後に
+  `CODEX_PRETOOLUSE_HOOK` へ変更した。** 変更後の測定は
+  `measurements/2026-10-17-assessment-origin-hook-value.md`）
 - 末尾にコメントを付けても状態と検知件数が変わらない
 - 照会（`Get-ScheduledTask -TaskName 'Synthetic'`）は `NO_DETECTION`
 - 信頼経路の宣言が無ければ、文字列から推測せず `UNASSESSABLE / UNSUPPORTED_LANGUAGE`

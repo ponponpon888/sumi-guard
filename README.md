@@ -50,6 +50,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
+- `measurements/2026-10-17-assessment-origin-hook-value.md`: フック記録の `evaluation_origin` 追加の測定結果（実運用フックからの動作は未検証）
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果
 - `measurements/2026-10-03-sumi-guard-final-code-correspondence.md`: 最終コードと測定結果の対応確認
 - `measurements/2026-10-03-local-store-module-tests.md`: 保存モジュールの単体試験結果
