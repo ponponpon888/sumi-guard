@@ -103,14 +103,27 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
   の `%`（`ForEach-Object` の別名）を正式名に変更した。意味は同じで、このファイルは
   ハッシュを記録した検証済みスクリプトではない。基準値を1から0へ下げた。
 
-#### 判断が必要なもの（このPRでは触っていない）
+#### 解析器の偽陽性（変更不要）
 
-| 箇所 | 内容 | なぜ判断が必要か |
+| 箇所 | 指摘 | 実際 |
 |---|---|---|
-| `kit/sumi-guard-prototype/process-observer.ps1:3,4` | `-RootPidFile` と `-OutputPath` が **Mandatory なのに本体で未参照** | 呼び出し側が必ず渡す値を無視している。出力先の指定が効いていない可能性がある。READMEにSHA-256を記録した検証済みスクリプトであり、変更すると測定記録との対応が切れる |
-| `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1:58` | `$EmitJapaneseDisplay` が未参照 | 渡しても何も起きないスイッチである。実装するか削除するかは仕様の判断 |
-| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1:250` | `$bodySha256` を代入しているが読んでいない | 本文ハッシュを計算・取得して捨てている。このファイルは `measurements/2026-10-03-protected-hook-integration-test.md` と対応している |
-| `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石だが、保存層の変更になる |
+| `kit/sumi-guard-prototype/process-observer.ps1:3` | `-RootPidFile` が未参照 | 関数 `Get-RootProcessIds`（60行、65行）がスクリプトスコープの同変数を読んでいる |
+| `kit/sumi-guard-prototype/process-observer.ps1:4` | `-OutputPath` が未参照 | 関数 `Write-Observation`（119行）が同様に読んでいる |
+
+`PSReviewUnusedParameter` は、スクリプト引数が入れ子の関数本体からだけ参照される場合を追えない。
+同じスクリプトの `$ReadyPath`（133行）と `$StopPath`（144行）はスクリプト直下で参照しており
+指摘されていない。この違いが偽陽性の根拠である。検証済みスクリプトを変更する必要はない。
+
+当初このPRでは「出力先の指定が効いていない可能性がある」と報告したが、呼び出し関係を確認して
+誤りと分かったため訂正した。
+
+#### 実際に手を入れる価値があるが、測定記録と対応するため判断が必要
+
+| 箇所 | 確認した事実 | 影響 |
+|---|---|---|
+| `demo/Invoke-SumiGuardManagedAssessmentStoreDemo.ps1:58` | 入口（177行）が `-EmitJapaneseDisplay` を渡しているが、関数は一度も読まない。日本語表示は `$DisplayInvoker` 側で行われる | 渡しても何も変わらないスイッチである。実装するか削除するかは仕様の判断。`measurements/2026-10-05-managed-assessment-store-demo.md` と対応する |
+| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1:250,257` | `$bodySha256` を記録から読み出しているが、報告（279〜282行）には入れていない。兄弟の `content_status`、`body_ref`、`body_reference_status` はいずれも報告に入っている | 本文ハッシュだけが報告から落ちている。docs/19 が本文ハッシュを中核の記録項目としているため、同一本文かの比較が報告からはできない。`measurements/2026-10-03-protected-hook-integration-test.md` と対応する |
+| `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 体裁の問題である。改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石 |
 
 #### 理由を付けて残すもの
 
@@ -123,8 +136,10 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 - **`$discard` 2件**（`kit/sumi-guard-protected-hook-test/invoke-sumi-guard-protected-hook-test.ps1:711`、
   `kit/sumi-guard-prototype/invoke-sumi-guard-prototype.ps1:631`）。出力の破棄であり、
   `$null =` が定石だが動作は同じ。後者は検証済みスクリプト
-- **`$stderr` 2件**（`tests/Invoke-RealHookRunnerSyntheticTests.ps1:40,173`）。標準エラーを
-  捕捉して判定に使っていない。判定を足すかは試験の仕様の判断
+- **`$stderr` 2件**（`tests/Invoke-RealHookRunnerSyntheticTests.ps1:40,173`）。40行は子プロセスの
+  標準エラーの読み出しで、**読み出さないとパイプのバッファで停止する**ため必要である。173行は
+  `finally` での後始末である。判定に使っていないだけで、不具合ではない。判定を足すかは試験の
+  仕様の判断
 - **`$CallerInterpreterVerified`**（`src/SumiGuard.ManagedAssessmentVerification/SumiGuard.ManagedAssessmentVerification.psm1:25`）。
   **未使用であること自体が仕様である。** docs/24 の信頼境界が「上位層による言語宣言は根拠に
   できない」としており、`tests/Invoke-ManagedAssessmentVerificationTests.ps1` の
