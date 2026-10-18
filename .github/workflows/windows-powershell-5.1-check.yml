@@ -54,3 +54,28 @@ jobs:
       - name: Run the test scripts that do not depend on DPAPI CurrentUser
         shell: powershell
         run: .\.github\scripts\Invoke-SumiGuardCiTestSuite.ps1
+
+  isolated-dpapi-smoke:
+    # A disposable Windows user profile is not evidence for the operator machine.
+    # All three scripts use synthetic input and uniquely named temp folders only.
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run isolated DPAPI and read-only CLI smoke tests
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $powershell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+          foreach ($name in @(
+            'Invoke-LocalStoreTests.ps1',
+            'Invoke-ExecutionAdapterIntegrationTests.ps1',
+            'Invoke-ReadOnlyCliTests.ps1'
+          )) {
+            Write-Host ("Starting isolated synthetic test: {0}" -f $name)
+            & $powershell51 -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path 'tests' $name)
+            if ($LASTEXITCODE -ne 0) {
+              throw ("Isolated synthetic test failed: {0} (exit {1})" -f $name, $LASTEXITCODE)
+            }
+          }
+
