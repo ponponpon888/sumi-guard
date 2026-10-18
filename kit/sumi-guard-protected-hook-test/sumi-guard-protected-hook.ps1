@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param()
 
 Set-StrictMode -Version 2.0
@@ -154,6 +154,14 @@ function Write-HookFailureNotice {
             -Record $notice
     }
     catch {
+        # Deliberately empty, and the only such place in this hook: the failure
+        # notice is itself the fallback channel, so a failure here has nowhere
+        # left to be recorded from inside the hook. Standard output is the hook
+        # protocol and standard error would turn a recording failure into a tool
+        # error, so neither is used. The hook still continues; making a recording
+        # failure consequential is the ENFORCE_RECORDING design
+        # (docs/26-enforce-recording-design.md), not something this fallback can
+        # do. Every other recording failure in this hook writes a notice here.
     }
 }
 
@@ -218,6 +226,15 @@ try {
             -Record $runtimeRecord
     }
     catch {
+        # A runtime record that was not written used to leave no trace at all.
+        # The same notice path the outcome-store failure uses is taken here, so
+        # the gap is visible to a reader of the store.
+        Write-HookFailureNotice `
+            -ExecutionStorePath $executionStore `
+            -ExecutionId $executionId `
+            -Stage 'hook-runtime-store' `
+            -ReasonCode 'RUNTIME_WRITE_FAILED' `
+            -BodyRef $null
     }
 
     $null = Import-Module -Name $adapterManifest -Force -ErrorAction Stop

@@ -1,4 +1,4 @@
-# Windows PowerShell 5.1 の継続的検査
+﻿# Windows PowerShell 5.1 の継続的検査
 
 `.github/workflows/windows-powershell-5.1-check.yml` は、GitHub Actions の `windows-latest`
 上で Windows PowerShell 5.1 を使い、構文、文字コード、静的解析、合成入力だけの試験を実行する。
@@ -133,20 +133,15 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 `tests/Invoke-ManagedAssessmentStoreDemoTests.ps1`（4判定）がCIで実行するため、削除の影響は
 CIで検証される。
 
-#### 体裁のため残すもの
+#### 体裁の指摘として残していたもの（2026-10-18に実施）
 
-| 箇所 | 確認した事実 | 影響 |
+| 箇所 | 確認した事実 | 対応 |
 |---|---|---|
-| `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1:29` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | 体裁の問題である。改名は呼び出し箇所をまたぐ。`New-` にして呼び出し側で `throw` する形が定石 |
+| `src/SumiGuard.AssessmentStore/SumiGuard.AssessmentStore.psm1` | 内部関数 `Throw-SumiGuardAssessmentStoreError` が非承認動詞 | `New-SumiGuardAssessmentStoreError`（例外を作って返す）へ改名し、呼び出し46箇所を `throw (New-... -Code 'X')` に変更した。動作は同じで、例外の種類・`Data` のコード・既定コードの扱いは変えていない。`tests/Invoke-AssessmentStoreTests.ps1` が13ケースでこのモジュールの失敗系を網羅しているため、改名はCIで検証される |
 
 #### 理由を付けて残すもの
 
-- **空のcatch 8件**。`src/SumiGuard.AssessmentStore` の3件は、例外チェーンを辿る途中の
-  非準拠な例外の読み飛ばし（50行）と、一時ファイル・バックアップの削除失敗（758、762行）で、
-  いずれも後始末であり、保存の成否判定には影響しない。`demo/` の2件と
-  `kit/sumi-guard-protected-hook-test/` の2件も後始末、`kit/sumi-guard-prototype/process-observer.ps1`
-  の1件は検証済みスクリプトである。ただし「記録失敗を暗黙の成功にしない」という方針との
-  整合は未判断で、基準値で増えないことだけ担保している
+- **空のcatch 8件**。方針との整合を判断し、3件を直した。下の「空のcatchブロック」を参照
 - **`$discard` 2件**（`kit/sumi-guard-protected-hook-test/invoke-sumi-guard-protected-hook-test.ps1:711`、
   `kit/sumi-guard-prototype/invoke-sumi-guard-prototype.ps1:631`）。出力の破棄であり、
   `$null =` が定石だが動作は同じ。後者は検証済みスクリプト
@@ -181,12 +176,31 @@ CIで検証される。
 変更すればハッシュと測定記録の対応が切れる。隔離環境での再検証が必要になるため、この変更では
 触っていない。
 
-### 空のcatchブロック
+### 空のcatchブロック（2026-10-18に判断した）
 
-8件ある。うち `kit/sumi-guard-prototype/process-observer.ps1` の1件は検証済みスクリプトであり
-触っていない。残りは一時ファイルの削除失敗など後始末の箇所だが、「記録失敗を暗黙の成功に
-しない」という設計方針と、どこまで整合させるかは未判断である。基準値に載せて、増えないことだけ
-担保している。
+「記録失敗を暗黙の成功にしない」という方針との整合を、8件すべてについて判断した。採用した
+規則は次のとおりである。
+
+> 空のcatchが許されるのは、(a) その失敗がすでに別の経路で失敗として報告されている場合、
+> (b) 飲み込む対象が後始末であり、残留が無いことを試験が確認している場合、
+> (c) そこが最後の記録経路であり、内部に記録先が残っていない場合に限る。
+> それ以外は、失敗を結果に現さなければならない。
+
+| 箇所 | 判断 | 対応 |
+|---|---|---|
+| `src/SumiGuard.AssessmentStore` 例外チェーンの走査 | (a)。読めない階層はコードを持たないだけで、呼び出し側は既定コード付きの失敗を受け取る | 理由をコメントで残した |
+| `src/SumiGuard.AssessmentStore` `finally` の一時ファイル削除 | (a)(b)。この経路に入るのは保存が完了しなかったときだけで、失敗は固有コードで報告済み。残留が無いことは `ATOMIC_SAVE_FAILURE_PRESERVES_STORE` が確認している | 理由をコメントで残した |
+| `src/SumiGuard.AssessmentStore` `finally` のバックアップ削除 | 同上 | 同上 |
+| `demo/Invoke-SumiGuardManagedPowerShellAssessmentDemo.ps1` 子プロセスの停止失敗 | **違反**。停止できない子プロセスがデモより長く生き残るのに、報告は成功のままになりうる | 報告に `child_process_stop_failed` を追加し、`success` の条件に入れた。`tests/Invoke-ManagedPowerShellAssessmentDemoTests.ps1` に2判定（項目の存在と、通常経路で false であること）を追加した |
+| `demo/Start-SumiGuardDemo.ps1` OS観測プロセスの停止失敗 | **違反**。停止できなくても「子プロセス終了・一時フック設定清掃: 完了」と表示していた | 失敗を記録し、終了コード1と残存プロセスの確認を促す行を出すようにした |
+| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1` `hook-runtime.ndjson` の書込み失敗 | **違反**。記録が残らないのに痕跡がゼロだった | 結果書込み失敗と同じ通知経路（`CollectionFailureNotice`、`RUNTIME_WRITE_FAILED`）を通すようにした |
+| `kit/sumi-guard-protected-hook-test/sumi-guard-protected-hook.ps1` 通知自体の書込み失敗 | (c)。通知が最後の経路であり、標準出力はフックのプロトコル、標準エラーは記録失敗をツールのエラーに変えてしまうため使わない | 空のまま残し、理由と限界をコメントに書いた。記録失敗を結果に反映させるのは docs/26 の ENFORCE_RECORDING の役割である |
+| `kit/sumi-guard-prototype/process-observer.ps1` `MainModule.FileName` の取得失敗 | (a)。保護されたプロセスでは取得できないのが通常で、`null` として観測に残る。加えてハッシュを記録した検証済みスクリプトである | 変更していない |
+
+デモ2件とキット1件は、どちらもCIの試験対象が限られる。`Invoke-SumiGuardManagedPowerShellAssessmentDemo.ps1`
+の変更はCIの試験が確認するが、`Start-SumiGuardDemo.ps1` と `sumi-guard-protected-hook.ps1` は
+構文と解析器までしか確認できない。後者は `body_sha256` の追加で既に再測定が必要な状態であり、
+この変更も同じ再測定に含まれる。
 
 ## 実行対象から除外した試験
 

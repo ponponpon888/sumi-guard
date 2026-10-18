@@ -571,6 +571,7 @@ $stage = '前提確認'
 $observer = $null
 $runRoot = $null
 $runRootCleaned = $false
+$observerStopFailed = $false
 $completed = $false
 $safeResult = $null
 try {
@@ -750,7 +751,14 @@ catch {
 }
 finally {
     if ($null -ne $observer) {
-        try { Stop-DemoObserver -Observer $observer } catch { }
+        try { Stop-DemoObserver -Observer $observer }
+        catch {
+            # An observer that could not be stopped keeps running after the demo
+            # ends. Swallowing that would print the cleanup line over a live
+            # process, so it is recorded and the demo exits as a failure. The
+            # exception itself is not kept: it can carry paths.
+            $observerStopFailed = $true
+        }
         $observer = $null
     }
     if ($null -ne $runRoot -and (Test-Path -LiteralPath $runRoot)) {
@@ -764,10 +772,13 @@ finally {
     $runRootCleaned = $null -eq $runRoot -or -not (Test-Path -LiteralPath $runRoot)
 }
 
-if (-not $completed -or -not $runRootCleaned) {
+if (-not $completed -or -not $runRootCleaned -or $observerStopFailed) {
     Write-Output ('デモ開始: 失敗（段階: {0}）' -f $stage)
     Write-Output '平文本文と例外詳細は表示していません。'
     Write-Output 'デモ保存先が残った場合は、専用の清掃コマンドを実行してください。'
+    if ($observerStopFailed) {
+        Write-Output 'OS観測プロセスを停止できませんでした。残存プロセスを確認してください。'
+    }
     exit 1
 }
 
