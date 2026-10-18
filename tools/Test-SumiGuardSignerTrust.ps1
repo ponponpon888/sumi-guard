@@ -95,7 +95,7 @@ function ConvertTo-SumiGuardTrustedUtc {
     return $parsed
 }
 
-function Test-SumiGuardExactFields {
+function Test-SumiGuardExactFieldSet {
     param([Parameter(Mandatory = $true)]$Value,
         [Parameter(Mandatory = $true)][string[]]$Names)
     if ($null -eq $Value -or $Value -is [array]) { return $false }
@@ -126,7 +126,7 @@ try {
     $rootPinVerified = $true
     try {
         $rootPublic = $script:Utf8.GetString($rootBytes) | ConvertFrom-Json -ErrorAction Stop
-        if (-not (Test-SumiGuardExactFields -Value $rootPublic -Names @(
+        if (-not (Test-SumiGuardExactFieldSet -Value $rootPublic -Names @(
             'schema_version','algorithm','modulus_base64','exponent_base64'))) {
             throw 'ROOT_PUBLIC_KEY_INVALID'
         }
@@ -173,7 +173,7 @@ try {
     try {
         $manifest = $script:Utf8.GetString($manifestBytes) |
             ConvertFrom-Json -ErrorAction Stop
-        if (-not (Test-SumiGuardExactFields -Value $manifest -Names @(
+        if (-not (Test-SumiGuardExactFieldSet -Value $manifest -Names @(
             'schema_version','record_type','manifest_epoch',
             'issued_at_utc','expires_at_utc','signers'))) {
             throw 'MANIFEST_SCHEMA_INVALID'
@@ -198,7 +198,7 @@ try {
         }
         $seen = @{}
         foreach ($entry in $manifest.signers) {
-            if (-not (Test-SumiGuardExactFields -Value $entry -Names @(
+            if (-not (Test-SumiGuardExactFieldSet -Value $entry -Names @(
                 'public_key_sha256','purpose','state','not_before_utc','not_after_utc'))) {
                 throw 'MANIFEST_SCHEMA_INVALID'
             }

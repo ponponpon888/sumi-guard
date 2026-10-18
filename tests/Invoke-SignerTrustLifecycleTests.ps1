@@ -166,6 +166,10 @@ try {
     $script:RootRsa = New-Object Security.Cryptography.RSACryptoServiceProvider(3072)
     $script:SignerA = New-Object Security.Cryptography.RSACryptoServiceProvider(3072)
     $script:SignerB = New-Object Security.Cryptography.RSACryptoServiceProvider(3072)
+    # Use disposable in-memory test keys, never persistent CSP key containers.
+    foreach ($ephemeral in @($script:RootRsa,$script:SignerA,$script:SignerB)) {
+        $ephemeral.PersistKeyInCsp = $false
+    }
     $script:RootPublicPath = Join-Path $work 'root-key.json'
     $keyAPath = Join-Path $work 'signer-a.json'
     $keyBPath = Join-Path $work 'signer-b.json'
