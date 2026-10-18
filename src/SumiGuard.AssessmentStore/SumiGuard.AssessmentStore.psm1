@@ -92,6 +92,58 @@ function Test-SumiGuardAssessmentPathContainsReparsePoint {
     return $false
 }
 
+# Assessment records contain execution identifiers and detection metadata.
+# Use the same current-user/SYSTEM DACL boundary as the encrypted body store.
+function Set-SumiGuardAssessmentStoreAcl {
+    param([Parameter(Mandatory = $true)][string]$StorePath)
+
+    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $systemSid = New-Object Security.Principal.SecurityIdentifier('S-1-5-18')
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($userSid, $systemSid)) {
+        $rule = New-Object Security.AccessControl.FileSystemAccessRule(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow)
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $StorePath -AclObject $acl -ErrorAction Stop
+}
+
+function Test-SumiGuardAssessmentAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$RequireProtected
+    )
+
+    $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $expected = @($userSid, 'S-1-5-18')
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    if ($RequireProtected -and -not $acl.AreAccessRulesProtected) { return $false }
+    $userFull = $false
+    $systemFull = $false
+    $aces = @($acl.GetAccessRules($true, $true,
+        [Security.Principal.SecurityIdentifier]))
+    foreach ($ace in $aces) {
+        $sid = $ace.IdentityReference.Value
+        if ($expected -cnotcontains $sid -or
+            $ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            return $false
+        }
+        $full = (($ace.FileSystemRights -band
+            [Security.AccessControl.FileSystemRights]::FullControl) -eq
+            [Security.AccessControl.FileSystemRights]::FullControl)
+        if ($sid -ceq $userSid -and $full) { $userFull = $true }
+        if ($sid -ceq 'S-1-5-18' -and $full) { $systemFull = $true }
+    }
+    return ($userFull -and $systemFull)
+}
+
 function Test-SumiGuardExactProperties {
     param(
         [Parameter(Mandatory = $true)]$Value,
@@ -150,6 +202,9 @@ function Get-SumiGuardAssessmentStoreMetadata {
         (Test-SumiGuardAssessmentPathContainsReparsePoint -Path $resolvedPath)) {
         Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
     }
+    if (-not (Test-SumiGuardAssessmentAcl -Path $resolvedPath -RequireProtected)) {
+        Throw-SumiGuardAssessmentStoreError -Code 'STORE_ACL_INVALID'
+    }
     $markerPath = Join-Path $resolvedPath $script:MarkerFileName
     $lockPath = Join-Path $resolvedPath $script:LockFileName
     $recordPath = Join-Path $resolvedPath $script:RecordFileName
@@ -163,6 +218,9 @@ function Get-SumiGuardAssessmentStoreMetadata {
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        }
+        if (-not (Test-SumiGuardAssessmentAcl -Path $path)) {
+            Throw-SumiGuardAssessmentStoreError -Code 'STORE_ACL_INVALID'
         }
     }
     try {
@@ -608,6 +666,11 @@ function New-SumiGuardAssessmentStore {
             }
         }
         $null = New-Item -ItemType Directory -Path $resolvedPath -ErrorAction Stop
+        # Refuse to create marker or records if the private DACL cannot be set.
+        Set-SumiGuardAssessmentStoreAcl -StorePath $resolvedPath
+        if (-not (Test-SumiGuardAssessmentAcl -Path $resolvedPath -RequireProtected)) {
+            Throw-SumiGuardAssessmentStoreError -Code 'STORE_ACL_INVALID'
+        }
         $marker = [ordered]@{
             schema_version = $script:SchemaVersion
             store_type = 'SumiGuard.AssessmentStore'
