@@ -72,11 +72,13 @@
 ## CIの対象と限界
 
 GitHub ActionsのWindows PowerShell 5.1で、構文、BOM、
-PSScriptAnalyzer、DPAPI非依存テストを実行する。
+PSScriptAnalyzer、DPAPI非依存テストを実行する。さらに合成データだけを
+使う `isolated-dpapi-smoke` ジョブでDPAPI依存3テストを、
+**使い捨てGitHubホスト上でのみ**実行する。
 - `tests/Invoke-AssessmentStoreTests.ps1`（新規ACL回帰）
 - `tests/Invoke-ReadOnlyModuleExportTests.ps1`（公開API）
 - `tests/Invoke-MonitorHookSyntheticTests.ps1`（既存MONITOR契約）
-- `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` は運用端末でのみ実行
+- `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` は隔離Windowsスモークでも実行する（運用端末での再検証は別途必要）
 
 CI成功はWindows実機の保護や常時監視、感染の有無を保証しない。
 
