@@ -86,3 +86,11 @@ It covers a baseline match, valid-JSON tamper, marker swap, truncated NDJSON,
 duplicate IDs, unexpected content, dangling retention references, new optional
 file creation, in-store baseline refusal, missing lock, and an AssessmentStore.
 The test runner cleans only its own GUID-named temporary directory.
+
+## Signed checkpoint verification option
+
+The verification-only wrapper `tools/Test-SumiGuardSignedCheckpoint.ps1`
+validates a separately trusted RSA public-key fingerprint and a detached
+signature over checkpoint bytes before invoking this read-only comparison.
+It performs no signing-key management or file writes. See
+`docs/29-signed-audit-checkpoint.md` for operational trust requirements.
