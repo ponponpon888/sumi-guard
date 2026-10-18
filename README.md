@@ -40,6 +40,15 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 自動検知、OS全体の監視、侵害の自動遮断を保証するものではありません。
 詳細は `docs/27-security-hardening-20261018.md` を参照してください。
 
+## 監査ログの読取り専用整合性確認
+
+`tools/Test-SumiGuardAuditIntegrity.ps1` は、Execution/Assessmentストアの
+既知の監査メタデータを**書き換えず**に構造検査し、ファイルごとのSHA-256を計算します。
+`Snapshot` は未認証の基準値候補を表示するだけであり、改ざんがないという証明ではありません。
+`Compare` は監査ストア**外の信頼できる基準値**との一致・不一致を確認します。
+予期せぬ変更と正規の追記は区別できません。暗号化本文やOS全体の安全性は検証しません。
+詳細は `docs/28-audit-integrity-readonly.md` を参照してください。
+
 ## 構成
 
 - `kit/sumi-guard-prototype/`: 検証済みPowerShell 5.1スクリプトと使用方法
@@ -68,6 +77,9 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
+- `docs/28-audit-integrity-readonly.md`: 監査ログの読取り専用構造検証・基準値照合と限界
+- `tools/Test-SumiGuardAuditIntegrity.ps1`: 監査ログを変更しない照合CLI
+- `tests/Invoke-AuditIntegrityTests.ps1`: 合成ログの改ざん・欠損・重複回帰テスト
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果

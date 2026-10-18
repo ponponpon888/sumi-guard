@@ -27,6 +27,7 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
 #   in. Most use 'success'; the synthetic runner uses 'synthetic_all_passed'.
 $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-AssessmentStoreTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-AuditIntegrityTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-CommandAssessmentHookIntegrationTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-CommandAssessmentTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-HookAssessmentStoreAdapterTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
