@@ -15,6 +15,8 @@ $script:LockFileName = '.sumi-guard-execution-store.lock'
 $script:EventFileName = 'events.ndjson'
 $script:FailureFileName = 'failures.ndjson'
 $script:RetentionFileName = 'retention.ndjson'
+# Bound append-only metadata files; never delete or rotate evidence implicitly.
+$script:MaximumMetadataFileBytes = 16MB
 $script:Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
 $script:SumiGuardTestForceEventWriteFailure = $false
 $script:SumiGuardUtcNowProvider = { [DateTimeOffset]::UtcNow }
@@ -232,6 +234,11 @@ function Write-SumiGuardMetadataRecord {
             [System.IO.FileMode]::OpenOrCreate,
             [System.IO.FileAccess]::Write,
             [System.IO.FileShare]::Read)
+        # Check within the exclusive store lock; never partially append a record.
+        if ([long]$bytes.LongLength -gt $script:MaximumMetadataFileBytes -or
+            $stream.Length -gt ($script:MaximumMetadataFileBytes - [long]$bytes.LongLength)) {
+            throw [System.IO.IOException]::new('SUMI Guard metadata file capacity exceeded.')
+        }
         [void]$stream.Seek(0, [System.IO.SeekOrigin]::End)
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.Flush($true)
