@@ -37,6 +37,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-MonitorHookSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1'; arguments = @('-RunSyntheticTests'); needs_empty_demo_data = $true; success_property = 'synthetic_all_passed' },
     [pscustomobject]@{ name = 'Invoke-PowerShellCommandCliTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-ReadOnlyModuleExportTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-RealHookRunnerSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' }
 )
 
