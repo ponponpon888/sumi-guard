@@ -4,6 +4,20 @@
 上で Windows PowerShell 5.1 を使い、構文、文字コード、静的解析、合成入力だけの試験を実行する。
 この検査はリポジトリ内のコードに対する機械的な点検であり、運用端末での動作検証ではない。
 
+## 2026-10-18 追加：隔離DPAPIスモーク試験
+
+`isolated-dpapi-smoke` ジョブでは、Windows GitHubホストの使い捨てユーザーで、
+固定・合成データのみを用いて次の3本を実行する。
+
+- `tests/Invoke-LocalStoreTests.ps1`
+- `tests/Invoke-ExecutionAdapterIntegrationTests.ps1`
+- `tests/Invoke-ReadOnlyCliTests.ps1`
+
+これら3本は引き続き `dpapi-independent-tests` の実行一覧から除外する。
+新ジョブはその除外方針を改変せず、**独立した環境のスモーク試験**として追加する。
+GitHub上でDPAPI機能が動いても、運用PCの鍵・プロファイル・既存ストアのACLの
+正しさを保証するものではない。本番のフック登録も行わない。
+
 ## この検査が言えること
 
 - リポジトリ内のすべての `.ps1` / `.psm1` / `.psd1` が Windows PowerShell 5.1 のパーサーで
