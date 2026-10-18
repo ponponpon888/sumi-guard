@@ -33,12 +33,18 @@ function New-SumiGuardAssessmentStoreResult {
     return [pscustomobject]$result
 }
 
-function Throw-SumiGuardAssessmentStoreError {
+# Creates the tagged exception; the caller throws it. The code travels in
+# Data so Get-SumiGuardAssessmentStoreErrorCode can turn it back into a fixed
+# status, and the exception message stays empty so no input text can reach it.
+function New-SumiGuardAssessmentStoreError {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Creates an in-memory exception object and changes no state.')]
     param([Parameter(Mandatory = $true)][string]$Code)
 
     $exception = [System.IO.InvalidDataException]::new()
     $exception.Data['SumiGuardAssessmentStoreCode'] = $Code
-    throw $exception
+    return $exception
 }
 
 function Get-SumiGuardAssessmentStoreErrorCode {
@@ -55,6 +61,11 @@ function Get-SumiGuardAssessmentStoreErrorCode {
             }
         }
         catch {
+            # Deliberately empty: an exception whose Data cannot be read carries
+            # no code at this level. Nothing is lost by it, because the caller
+            # still receives a failure, and with the default code if no level
+            # carries one. Reading further is the only alternative, which is
+            # what the loop does next.
         }
         $current = $current.InnerException
     }
@@ -136,7 +147,7 @@ function ConvertTo-SumiGuardUtcTimestamp {
     param([AllowNull()]$Value)
 
     if ($Value -isnot [string] -or $Value.Length -gt 64) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     $timestamp = [DateTimeOffset]::MinValue
     if (-not [DateTimeOffset]::TryParse(
@@ -144,7 +155,7 @@ function ConvertTo-SumiGuardUtcTimestamp {
         [Globalization.CultureInfo]::InvariantCulture,
         [Globalization.DateTimeStyles]::RoundtripKind,
         [ref]$timestamp)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     return $timestamp.ToUniversalTime().ToString('o')
 }
@@ -155,21 +166,21 @@ function Get-SumiGuardAssessmentStoreMetadata {
     $resolvedPath = [IO.Path]::GetFullPath($StorePath)
     if (-not (Test-Path -LiteralPath $resolvedPath -PathType Container) -or
         (Test-SumiGuardAssessmentPathContainsReparsePoint -Path $resolvedPath)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
     }
     $markerPath = Join-Path $resolvedPath $script:MarkerFileName
     $lockPath = Join-Path $resolvedPath $script:LockFileName
     $recordPath = Join-Path $resolvedPath $script:RecordFileName
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING')
     }
     foreach ($path in @($markerPath, $lockPath, $recordPath)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
         }
         $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
         }
     }
     try {
@@ -177,11 +188,11 @@ function Get-SumiGuardAssessmentStoreMetadata {
         $marker = $markerText | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
     }
     if (-not (Test-SumiGuardExactProperties -Value $marker -Expected @(
         'schema_version', 'store_type', 'store_id', 'created_at_utc', 'maximum_bytes'))) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
     }
     if ($marker.schema_version -isnot [int] -or
         [int]$marker.schema_version -ne $script:SchemaVersion -or
@@ -190,7 +201,7 @@ function Get-SumiGuardAssessmentStoreMetadata {
         $marker.maximum_bytes -isnot [long] -and $marker.maximum_bytes -isnot [int] -or
         [long]$marker.maximum_bytes -lt 512 -or
         [long]$marker.maximum_bytes -gt 1073741824) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
     }
     $created = [DateTimeOffset]::MinValue
     if ($marker.created_at_utc -isnot [string] -or
@@ -199,11 +210,11 @@ function Get-SumiGuardAssessmentStoreMetadata {
             [Globalization.CultureInfo]::InvariantCulture,
             [Globalization.DateTimeStyles]::RoundtripKind,
             [ref]$created)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_INVALID')
     }
     $recordInfo = Get-Item -LiteralPath $recordPath -Force -ErrorAction Stop
     if ($recordInfo.Length -gt [long]$marker.maximum_bytes) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_CAPACITY_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_CAPACITY_INVALID')
     }
     return [pscustomobject][ordered]@{
         store_path = $resolvedPath
@@ -222,7 +233,7 @@ function Enter-SumiGuardAssessmentWriteLock {
     )
 
     if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING')
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($clock.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
@@ -242,7 +253,7 @@ function Enter-SumiGuardAssessmentWriteLock {
             Start-Sleep -Milliseconds ([Math]::Min(25, $remaining))
         }
     }
-    Throw-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_TIMEOUT'
+    throw (New-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_TIMEOUT')
 }
 
 function Enter-SumiGuardAssessmentReadLock {
@@ -252,7 +263,7 @@ function Enter-SumiGuardAssessmentReadLock {
     )
 
     if (-not (Test-Path -LiteralPath $LockPath -PathType Leaf)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_MISSING')
     }
     $clock = [Diagnostics.Stopwatch]::StartNew()
     while ($clock.ElapsedMilliseconds -lt $TimeoutMilliseconds) {
@@ -272,7 +283,7 @@ function Enter-SumiGuardAssessmentReadLock {
             Start-Sleep -Milliseconds ([Math]::Min(25, $remaining))
         }
     }
-    Throw-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_TIMEOUT'
+    throw (New-SumiGuardAssessmentStoreError -Code 'STORE_LOCK_TIMEOUT')
 }
 
 function Test-SumiGuardKnownAssessmentReason {
@@ -300,11 +311,11 @@ function ConvertTo-SumiGuardFindingForSave {
     param([Parameter(Mandatory = $true)]$Finding)
 
     if ($null -eq $Finding -or $Finding -is [Array]) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     foreach ($name in @('rule_id', 'rule_version', 'severity', 'reason_code')) {
         if ($Finding.PSObject.Properties.Name -cnotcontains $name) {
-            Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+            throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
         }
     }
     $ruleId = [string]$Finding.rule_id
@@ -321,7 +332,7 @@ function ConvertTo-SumiGuardFindingForSave {
         $ruleVersion -cne $expected[0] -or
         $severity -cne $expected[1] -or
         $reasonCode -cne $expected[2]) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     return [pscustomobject][ordered]@{
         rule_id = $ruleId
@@ -340,7 +351,7 @@ function ConvertTo-SumiGuardAssessmentRecordForSave {
     )
 
     if ($null -eq $Assessment -or $Assessment -is [Array]) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     $required = @(
         'schema_version', 'record_id', 'record_type', 'execution_id',
@@ -349,7 +360,7 @@ function ConvertTo-SumiGuardAssessmentRecordForSave {
         'source_excerpt_included', 'monitor_action', 'automatic_deny')
     foreach ($name in $required) {
         if ($Assessment.PSObject.Properties.Name -cnotcontains $name) {
-            Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+            throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
         }
     }
     if ($Assessment.schema_version -isnot [int] -or
@@ -361,30 +372,30 @@ function ConvertTo-SumiGuardAssessmentRecordForSave {
         $Assessment.source_excerpt_included -ne $false -or
         [string]$Assessment.monitor_action -cne 'WARN_ONLY' -or
         $Assessment.automatic_deny -ne $false) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     $status = [string]$Assessment.assessment_status
     if ($status -cnotin @('DETECTED', 'NO_DETECTION', 'UNASSESSABLE', 'EVALUATION_FAILED') -or
         -not (Test-SumiGuardKnownAssessmentReason -Status $status -Reason $Assessment.assessment_reason_code)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     if ($EvaluationOrigin -cnotin $script:EvaluationOrigins -or
         $AssessmentScope -cne 'WINDOWS_POWERSHELL_COMMAND_V1') {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
 
     $relatedId = $null
     if ($EvaluationOrigin -ceq 'SYNTHETIC_TEST') {
         if ($null -ne $RelatedExecutionId -and
             -not [string]::IsNullOrWhiteSpace([string]$RelatedExecutionId)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+            throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
         }
     }
     else {
         if (-not (Test-SumiGuardStringValue -Value $RelatedExecutionId -Pattern '^[0-9a-f]{32}$' -MaximumLength 32) -or
             -not (Test-SumiGuardStringValue -Value $Assessment.execution_id -Pattern '^[0-9a-f]{32}$' -MaximumLength 32) -or
             [string]$Assessment.execution_id -cne [string]$RelatedExecutionId) {
-            Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+            throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
         }
         $relatedId = ([string]$RelatedExecutionId).ToLowerInvariant()
     }
@@ -396,14 +407,14 @@ function ConvertTo-SumiGuardAssessmentRecordForSave {
     if ($inputFindings.Count -gt 16 -or
         ($status -ceq 'DETECTED' -and $inputFindings.Count -lt 1) -or
         ($status -cne 'DETECTED' -and $inputFindings.Count -ne 0)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+        throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
     }
     $storedFindings = New-Object System.Collections.Generic.List[object]
     $seenRuleIds = @{}
     foreach ($finding in $inputFindings) {
         $stored = ConvertTo-SumiGuardFindingForSave -Finding $finding
         if ($seenRuleIds.ContainsKey($stored.rule_id)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT'
+            throw (New-SumiGuardAssessmentStoreError -Code 'INVALID_ASSESSMENT')
         }
         $seenRuleIds[$stored.rule_id] = $true
         $storedFindings.Add($stored)
@@ -449,38 +460,38 @@ function ConvertFrom-SumiGuardStoredAssessmentRecord {
         -not (Test-SumiGuardStringValue -Value $Record.ruleset_version -Pattern '^[A-Za-z0-9][A-Za-z0-9._/-]{0,127}$' -MaximumLength 128) -or
         $Record.content_included -ne $false -or
         $Record.source_excerpt_included -ne $false) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     try {
         $occurredAt = ConvertTo-SumiGuardUtcTimestamp -Value $Record.occurred_at_utc
     }
     catch {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     if ($null -ne $Record.assessment_reason_code -and
         -not (Test-SumiGuardStringValue -Value $Record.assessment_reason_code -Pattern '^[A-Z][A-Z0-9_]{0,63}$' -MaximumLength 64)) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     $executionId = $null
     if ($null -ne $Record.execution_id) {
         if (-not (Test-SumiGuardStringValue -Value $Record.execution_id -Pattern '^[0-9a-f]{32}$' -MaximumLength 32)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
         $executionId = [string]$Record.execution_id
     }
     if ([string]$Record.evaluation_origin -ceq 'SYNTHETIC_TEST' -and $null -ne $executionId) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     if ([string]$Record.evaluation_origin -cin $script:EvaluationOriginsRequiringExecutionId -and
         $null -eq $executionId) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     $inputFindings = @()
     if ($null -ne $Record.findings) {
         $inputFindings = @($Record.findings)
     }
     if ($inputFindings.Count -gt 16) {
-        Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+        throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
     }
     $findings = New-Object System.Collections.Generic.List[object]
     $seen = @{}
@@ -491,10 +502,10 @@ function ConvertFrom-SumiGuardStoredAssessmentRecord {
             -not (Test-SumiGuardStringValue -Value $finding.rule_version -Pattern '^[0-9][0-9A-Za-z.-]{0,31}$' -MaximumLength 32) -or
             -not (Test-SumiGuardStringValue -Value $finding.severity -Pattern '^[A-Z][A-Z0-9_]{0,31}$' -MaximumLength 32) -or
             -not (Test-SumiGuardStringValue -Value $finding.reason_code -Pattern '^[A-Z][A-Z0-9_]{0,63}$' -MaximumLength 64)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
         if ($seen.ContainsKey([string]$finding.rule_id)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
         $knownExpected = switch ([string]$finding.rule_id) {
             'SG-CMD-001' { @('1.0.0', 'HIGH', 'DOWNLOAD_TO_EXECUTION_FLOW') }
@@ -506,7 +517,7 @@ function ConvertFrom-SumiGuardStoredAssessmentRecord {
             ([string]$finding.rule_version -cne $knownExpected[0] -or
                 [string]$finding.severity -cne $knownExpected[1] -or
                 [string]$finding.reason_code -cne $knownExpected[2])) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
         $seen[[string]$finding.rule_id] = $true
         $findings.Add([pscustomobject][ordered]@{
@@ -524,7 +535,7 @@ function ConvertFrom-SumiGuardStoredAssessmentRecord {
             -Reason $Record.assessment_reason_code) -or
             ($storedStatus -ceq 'DETECTED' -and $findings.Count -lt 1) -or
             ($storedStatus -cne 'DETECTED' -and $findings.Count -ne 0)) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
     }
     return [pscustomobject][ordered]@{
@@ -555,13 +566,13 @@ function Read-SumiGuardAssessmentRecordsUnsafe {
             return @()
         }
         if ($bytes[$bytes.Length - 1] -ne 10) {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_FILE_INCOMPLETE'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_FILE_INCOMPLETE')
         }
         try {
             $text = $script:Utf8Strict.GetString($bytes)
         }
         catch {
-            Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+            throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
         }
         $records = New-Object System.Collections.Generic.List[object]
         $seenIds = @{}
@@ -570,17 +581,17 @@ function Read-SumiGuardAssessmentRecordsUnsafe {
             $line = $reader.ReadLine()
             if ($null -eq $line) { break }
             if ([string]::IsNullOrWhiteSpace($line)) {
-                Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+                throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
             }
             try {
                 $parsed = $line | ConvertFrom-Json -ErrorAction Stop
             }
             catch {
-                Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID'
+                throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_INVALID')
             }
             $record = ConvertFrom-SumiGuardStoredAssessmentRecord -Record $parsed
             if ($seenIds.ContainsKey($record.assessment_id)) {
-                Throw-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_DUPLICATE'
+                throw (New-SumiGuardAssessmentStoreError -Code 'STORE_RECORD_DUPLICATE')
             }
             $seenIds[$record.assessment_id] = $true
             $records.Add($record)
@@ -727,7 +738,7 @@ function Save-SumiGuardAssessment {
             if ($null -ne $stream) { $stream.Dispose() }
         }
         if ($script:SumiGuardAssessmentStoreTestForceAtomicWriteFailure) {
-            Throw-SumiGuardAssessmentStoreError -Code 'ATOMIC_WRITE_FAILED'
+            throw (New-SumiGuardAssessmentStoreError -Code 'ATOMIC_WRITE_FAILED')
         }
         $backupPath = Join-Path $metadata.store_path (
             '.previous-assessment-' + [Guid]::NewGuid().ToString('N') + '.tmp')
@@ -736,14 +747,14 @@ function Save-SumiGuardAssessment {
             $temporaryPath = $null
         }
         catch {
-            Throw-SumiGuardAssessmentStoreError -Code 'ATOMIC_WRITE_FAILED'
+            throw (New-SumiGuardAssessmentStoreError -Code 'ATOMIC_WRITE_FAILED')
         }
         try {
             [IO.File]::Delete($backupPath)
             $backupPath = $null
         }
         catch {
-            Throw-SumiGuardAssessmentStoreError -Code 'SAVED_BACKUP_CLEANUP_FAILED'
+            throw (New-SumiGuardAssessmentStoreError -Code 'SAVED_BACKUP_CLEANUP_FAILED')
         }
         return New-SumiGuardAssessmentStoreResult -Success $true -Status 'SAVED' -Properties @{
             assessment_id = $record.assessment_id
@@ -761,6 +772,13 @@ function Save-SumiGuardAssessment {
     }
     finally {
         if ($null -ne $lock) { $lock.Dispose() }
+        # Both deletes below are reached only when the save did not complete,
+        # because the success path clears each path as soon as it is done with
+        # it. The caller therefore already has a failure result with its own
+        # code, so these catches are deliberately empty: they cannot turn a
+        # failure into a success. That a failed save leaves no residue is a
+        # separate claim, and it is asserted by the test case
+        # ATOMIC_SAVE_FAILURE_PRESERVES_STORE rather than trusted here.
         if ($null -ne $temporaryPath -and
             (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
             try { [IO.File]::Delete($temporaryPath) } catch { }

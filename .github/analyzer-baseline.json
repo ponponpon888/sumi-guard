@@ -1,8 +1,8 @@
 {
   "comment": "Per-rule PSScriptAnalyzer counts the repository currently carries. The check fails when a rule goes above its number here, or when a rule absent from this file appears. Lowering a number is the point: fix findings, then lower it in the same commit.",
   "measured_from": {
-    "commit": "9ff7a9b",
-    "run": "https://github.com/ponponpon888/sumi-guard/actions/runs/39031600478",
+    "commit": "912514a",
+    "run": "https://github.com/ponponpon888/sumi-guard/actions/runs/39178225176",
     "analyzer_version": "1.25.0",
     "powershell_version": "5.1.26100.33438"
   },
@@ -14,9 +14,9 @@
     "Warning/PSAvoidAssignmentToAutomaticVariable": 12,
     "Warning/PSReviewUnusedParameter": 7,
     "Warning/PSAvoidUsingWriteHost": 0,
-    "Warning/PSAvoidUsingEmptyCatchBlock": 8,
+    "Warning/PSAvoidUsingEmptyCatchBlock": 5,
     "Warning/PSUseDeclaredVarsMoreThanAssignments": 4,
     "Warning/PSAvoidUsingCmdletAliases": 0,
-    "Warning/PSUseApprovedVerbs": 1
+    "Warning/PSUseApprovedVerbs": 0
   }
 }

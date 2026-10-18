@@ -194,6 +194,7 @@ function Invoke-SumiGuardManagedFixedCommand {
             exit_code = $null
             stderr_nonempty = $null
             timed_out = $false
+            child_process_stop_failed = $false
         }
     }
 
@@ -240,6 +241,7 @@ function Invoke-SumiGuardManagedFixedCommand {
             exit_code = $process.ExitCode
             stderr_nonempty = (-not [string]::IsNullOrEmpty($stderrText))
             timed_out = (-not $exited)
+            child_process_stop_failed = $false
         }
     }
     catch {
@@ -251,6 +253,7 @@ function Invoke-SumiGuardManagedFixedCommand {
             exit_code = $null
             stderr_nonempty = $null
             timed_out = $false
+            child_process_stop_failed = $false
         }
     }
     finally {
@@ -262,6 +265,13 @@ function Invoke-SumiGuardManagedFixedCommand {
                 }
             }
             catch {
+                # A child process that could not be stopped outlives this demo.
+                # Swallowing that would report a clean run over a process still
+                # running, so it is recorded and it fails the demo. The exception
+                # itself is not kept: it can carry paths and command text.
+                if ($null -ne $result) {
+                    $result.child_process_stop_failed = $true
+                }
             }
             $process.Dispose()
         }
@@ -299,6 +309,7 @@ function New-SumiGuardManagedDemoFailureReport {
         exit_code = $null
         stderr_nonempty = $null
         timed_out = $false
+        child_process_stop_failed = $false
         raw_stdout_included = $false
         raw_stderr_included = $false
         command_text_included = $false
@@ -354,6 +365,7 @@ function Invoke-SumiGuardManagedPowerShellAssessmentDemo {
                 exit_code = $null
                 stderr_nonempty = $null
                 timed_out = $false
+                child_process_stop_failed = $false
             }
         }
 
@@ -363,13 +375,15 @@ function Invoke-SumiGuardManagedPowerShellAssessmentDemo {
                 $execution.stdout_matches_expected -eq $true -and
                 $execution.exit_code -eq 0 -and
                 $execution.stderr_nonempty -eq $false -and
-                $execution.timed_out -eq $false)
+                $execution.timed_out -eq $false -and
+                $execution.child_process_stop_failed -eq $false)
         }
         else {
             ($verification.verified -and
                 $decision.assessment_expected -and
                 $commandMatches -and
-                -not $execution.execution_started)
+                -not $execution.execution_started -and
+                $execution.child_process_stop_failed -eq $false)
         }
         $demoStatus = if ($RunRequested -and $success) {
             'COMPLETED'
@@ -407,6 +421,7 @@ function Invoke-SumiGuardManagedPowerShellAssessmentDemo {
             exit_code = $execution.exit_code
             stderr_nonempty = $execution.stderr_nonempty
             timed_out = [bool]$execution.timed_out
+            child_process_stop_failed = [bool]$execution.child_process_stop_failed
             raw_stdout_included = $false
             raw_stderr_included = $false
             command_text_included = $false

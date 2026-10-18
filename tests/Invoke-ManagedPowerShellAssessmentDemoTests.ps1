@@ -334,6 +334,14 @@ try {
         Assert-SumiGuardManagedDemoTest `
             ($report.PSObject.Properties.Name -ccontains 'execution_status') `
             'EXECUTION_STATUS_PRESENT'
+        # A child process that could not be stopped must be visible in the
+        # report, and must not be reported as a clean run.
+        Assert-SumiGuardManagedDemoTest `
+            ($report.PSObject.Properties.Name -ccontains 'child_process_stop_failed') `
+            'CHILD_PROCESS_STOP_FIELD_PRESENT'
+        Assert-SumiGuardManagedDemoTest `
+            ($report.child_process_stop_failed -eq $false) `
+            'CHILD_PROCESS_WAS_STOPPED'
     }
 }
 catch {
