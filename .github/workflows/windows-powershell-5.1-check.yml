@@ -13,7 +13,10 @@
 name: windows-powershell-5.1-check
 
 on:
+  # Feature branches run CI via PR, not a duplicate push workflow.
   push:
+    branches:
+      - master
   pull_request:
   workflow_dispatch:
 

@@ -170,13 +170,16 @@ function Invoke-Hook {
         [switch]$TrustedRoute,
         [string]$IntentOutcome = 'TEST_SUCCESS',
         [switch]$ForceEvaluationFailure,
-        [switch]$ForceAssessmentSaveFailure
+        [switch]$ForceAssessmentSaveFailure,
+        [switch]$OmitSyntheticTestOnly,
+        [switch]$WrongResultPath
     )
 
     $caseRoot = Join-Path $workRoot $CaseName
     $assessmentStorePath = Join-Path $caseRoot 'assessment-store'
     $noticePath = Join-Path $caseRoot 'notices\monitor-hook-notices.ndjson'
     $resultPath = Join-Path $caseRoot 'result.json'
+    $hookResultPath = if ($WrongResultPath) { Join-Path $caseRoot 'wrong-result.json' } else { $resultPath }
     $null = New-Item -ItemType Directory -Path $caseRoot -Force
 
     $script:stage = $CaseName + '/store-setup'
@@ -198,8 +201,9 @@ function Invoke-Hook {
         '-LocalStorePath', (Join-Path $caseRoot 'body-store'),
         '-AssessmentStorePath', $assessmentStorePath,
         '-NoticePath', $noticePath,
-        '-ResultPath', $resultPath,
+        '-ResultPath', $hookResultPath,
         '-TestIntentSaveOutcome', $IntentOutcome)
+    if (-not $OmitSyntheticTestOnly) { $arguments += '-SyntheticTestOnly' }
     if ($TrustedRoute) { $arguments += '-TrustedWindowsPowerShellRoute' }
     if ($ForceEvaluationFailure) { $arguments += '-TestForceEvaluationFailure' }
     if ($ForceAssessmentSaveFailure) { $arguments += '-TestForceAssessmentSaveFailure' }
@@ -602,6 +606,31 @@ try {
         Add-Result 'CASE_EXCEPTION_ID_THIRD' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # Unauthorized test-only switches must not touch the real adapter.
+    try {
+        $script:stage = 'assert/test-scope-rejections'
+        $unauthorized = Invoke-Hook -CaseName 'test-no-opt-in' -OmitSyntheticTestOnly -EventJson (Get-HookEventJson -Command 'Get-Date')
+        Add-Result 'TEST_FLAGS_WITHOUT_OPT_IN_REJECTED' (
+            $unauthorized.exit_code -eq 0 -and
+            $null -eq $unauthorized.detail -and
+            $unauthorized.stdout_text.Contains('TEST_CONFIGURATION_REJECTED') -and
+            [string]::IsNullOrEmpty([string]$unauthorized.store_text) -and
+            [string]::IsNullOrEmpty([string]$unauthorized.notice_text))
+        $wrong = Invoke-Hook -CaseName 'test-wrong-path' -WrongResultPath -EventJson (Get-HookEventJson -Command 'Get-Date')
+        Add-Result 'TEST_FLAGS_OUTSIDE_FIXTURE_REJECTED' (
+            $wrong.exit_code -eq 0 -and
+            $null -eq $wrong.detail -and
+            $wrong.stdout_text.Contains('TEST_CONFIGURATION_REJECTED') -and
+            [string]::IsNullOrEmpty([string]$wrong.store_text) -and
+            [string]::IsNullOrEmpty([string]$wrong.notice_text))
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_TEST_SCOPE' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
             stage = [string]$script:stage
         }
     }
