@@ -11,7 +11,7 @@
 - 非ASCIIを含むスクリプトに UTF-8 BOM がある。5.1 は BOM のないファイルをアクティブな
   ANSI コードページで解釈するため、BOM が落ちると固定の日本語警告文が実行時に文字化けする。
 - PSScriptAnalyzer が Error 深刻度の指摘を出さない。
-- `SumiGuard.LocalStore` を読み込まない試験スクリプト11件が、クリーンな Windows ホストで
+- `SumiGuard.LocalStore` を読み込まない試験スクリプト13件（読み取り専用APIの静的契約検査を含む）が、クリーンな Windows ホストで
   成功を報告し、終了コード0で終わる。
 
 ## この検査が言えないこと
