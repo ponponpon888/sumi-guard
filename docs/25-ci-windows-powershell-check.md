@@ -63,7 +63,9 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 通ってしまう。かといって一度に全部直すのは、判定内容を変えない保証が取れない。基準値を置けば、
 今日のコストを0にしたまま、後退だけを止められる。
 
-2026-10-17 時点の基準値（commit `64ddf6b`、PSScriptAnalyzer 1.25.0 の実測）は次のとおり。
+2026-10-18 時点の基準値（PSScriptAnalyzer 1.25.0 の実測）は次のとおり。空のcatch3件の修正と
+内部例外関数の改名により、`PSAvoidUsingEmptyCatchBlock` は8から5、`PSUseApprovedVerbs` は1から
+0へ下げた（実測は commit `7857502`、実行 39178106034）。
 
 | ルール | 件数 |
 |---|---|
@@ -74,10 +76,10 @@ Error 深刻度だけを失敗条件にすると、既存の Warning 99件・Inf
 | `Warning/PSAvoidAssignmentToAutomaticVariable` | 12 |
 | `Warning/PSAvoidUsingWriteHost` | 0 |
 | `Warning/PSReviewUnusedParameter` | 7 |
-| `Warning/PSAvoidUsingEmptyCatchBlock` | 8 |
+| `Warning/PSAvoidUsingEmptyCatchBlock` | 5 |
 | `Warning/PSUseDeclaredVarsMoreThanAssignments` | 4 |
 | `Warning/PSAvoidUsingCmdletAliases` | 0 |
-| `Warning/PSUseApprovedVerbs` | 1 |
+| `Warning/PSUseApprovedVerbs` | 0 |
 
 ### 基準値が最初に止めたのはCI自身の変更だった
 

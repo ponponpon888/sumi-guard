@@ -14,9 +14,9 @@
     "Warning/PSAvoidAssignmentToAutomaticVariable": 12,
     "Warning/PSReviewUnusedParameter": 7,
     "Warning/PSAvoidUsingWriteHost": 0,
-    "Warning/PSAvoidUsingEmptyCatchBlock": 8,
+    "Warning/PSAvoidUsingEmptyCatchBlock": 5,
     "Warning/PSUseDeclaredVarsMoreThanAssignments": 4,
     "Warning/PSAvoidUsingCmdletAliases": 0,
-    "Warning/PSUseApprovedVerbs": 1
+    "Warning/PSUseApprovedVerbs": 0
   }
 }

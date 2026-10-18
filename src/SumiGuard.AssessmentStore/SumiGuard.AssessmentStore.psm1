@@ -38,7 +38,7 @@ function New-SumiGuardAssessmentStoreResult {
 # status, and the exception message stays empty so no input text can reach it.
 function New-SumiGuardAssessmentStoreError {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
-        'PSUseShouldProcess', '',
+        'PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Creates an in-memory exception object and changes no state.')]
     param([Parameter(Mandatory = $true)][string]$Code)
 
