@@ -5,7 +5,7 @@ Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $script:Root = Split-Path -Parent $PSScriptRoot
 $script:VerifierPath = Join-Path $script:Root 'tools\Test-SumiGuardSignedCheckpoint.ps1'
-$script:AuditPath = Join-Path $script:Root 'tools\Test-SumiGuardAuditIntegrity.ps1'
+$script:IntegrityToolScript = Join-Path $script:Root 'tools\Test-SumiGuardAuditIntegrity.ps1'
 $script:PowerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Utf8 = New-Object Text.UTF8Encoding($false, $true)
 $script:Results = New-Object System.Collections.Generic.List[object]
@@ -88,7 +88,7 @@ try {
     $originalHash = (Get-FileHash -LiteralPath $auditPath -Algorithm SHA256).Hash
 
     $script:Stage = 'SNAPSHOT'
-    $snapshotOutput = @(& $script:PowerShell51 -NoLogo -NoProfile -NonInteractive -File $script:AuditPath -StoreKind Execution -StorePath $store -Action Snapshot)
+    $snapshotOutput = @(& $script:PowerShell51 -NoLogo -NoProfile -NonInteractive -File $script:IntegrityToolScript -StoreKind Execution -StorePath $store -Action Snapshot)
     if ($LASTEXITCODE -ne 0) { throw 'SNAPSHOT_FAILED' }
     $snapshotJson = ($snapshotOutput -join [Environment]::NewLine).Trim()
     $snapshot = $snapshotJson | ConvertFrom-Json -ErrorAction Stop

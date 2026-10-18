@@ -140,7 +140,7 @@ try {
         }
         $modulus = [Convert]::FromBase64String([string]$publicKey.modulus_base64)
         if ($modulus.Length -lt 384 -or $modulus.Length -gt 512 -or
-            ($modulus.Length -mod 64) -ne 0 -or $modulus[0] -eq 0) {
+            ($modulus.Length % 64) -ne 0 -or $modulus[0] -eq 0) {
             throw 'PUBLIC_KEY_INVALID'
         }
     }
