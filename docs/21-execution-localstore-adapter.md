@@ -10,7 +10,7 @@
 公開コマンドは次の6個です。
 
 - `Initialize-SumiGuardExecutionStore`: 専用メタデータ領域を作り、対象ユーザーとSYSTEMだけのACLを設定する
-- `Save-SumiGuardExecutionIntent`: 本文をLocalStoreへ保存後、実行前イベントを記録する
+- `Save-SumiGuardExecutionIntent`: 既定では本文をLocalStoreへ暗号化保存後に実行前イベントを記録する。`-MetadataOnly` なら本文を保存せずハッシュと状態のみを記録する
 - `Get-SumiGuardExecutionRecord`: 本文を含まない実行記録を一覧またはID指定で読む
 - `Get-SumiGuardCollectionFailureNotice`: 本文を含まない収集失敗通知を読む
 - `Read-SumiGuardExecutionBody`: `execution_id` を指定した明示操作でのみ本文を復号する
@@ -40,9 +40,20 @@ BOMなしUTF-8へ変換したバイト列です。
 | 本文保存 | イベント保存 | 扱い |
 |---|---|---|
 | 成功 | 成功 | `EVENT_AND_BODY_SAVED`、`CAPTURED_ENCRYPTED`、参照 `AVAILABLE` |
+| 方針により省略 | 成功 | `EVENT_SAVED_METADATA_ONLY`、`HASH_ONLY`、`RECORDS_FOUND`、参照 `NOT_STORED` |
 | 失敗 | 成功 | `EVENT_SAVED_BODY_COLLECTION_FAILED`、`HASH_ONLY`、`COLLECTION_FAILED` |
 | 成功 | 失敗 | `EVENT_SAVE_FAILED_BODY_ORPHANED`、本文を `SAVED_ORPHANED` として失敗通知へ記録 |
 | 失敗 | 失敗 | `EVENT_AND_BODY_SAVE_FAILED`。別の失敗通知も書けなければ永続記録は保証できない |
+
+**機密情報の最小化：**運用 `hooks/Invoke-SumiGuardMonitorHook.ps1` は既定で
+`-MetadataOnly` を指定するため、生のコマンド本文を保存しません。本文を保存する
+運用経路のみ `-CaptureCommandBody` を明示します。ハッシュ自体も、
+推測されやすい短いコマンドでは照合され得る点に注意してください。
+
+イベント、失敗通知、保持期限レコードは種類ごとに16MiBの上限で追記拒否し、
+超過時に古い監査記録を黙って削除しません。上限超過によるイベントの保存失敗は
+`EVENT_SAVE_FAILED_METADATA_ONLY` などの失敗状態として呼び出し元へ返します。
+保持期限の自動ローテーションや改ざん耐性はまだありません。
 
 容量超過、暗号化失敗、イベント保存失敗のいずれも `monitor_action=CONTINUE`、
 `automatic_deny=false` です。MONITORモードでは収集失敗を実行拒否へ変換しません。本文保存失敗後に
@@ -71,6 +82,11 @@ LocalStore清掃後も元の実行イベントを残し、清掃直前に存在�
 読取り中の書込みと書込み中の読取りは共有違反になります。共有違反の8桁HResultだけを上限付きで
 再試行し、取得ハンドルは `finally` で破棄します。ロックが存在しない場合は作成せず、メタデータの
 直接読取りにも迂回せず、既存API形式の固定失敗を返します。
+
+このセキュリティ強化ブランチでは、ReadOnly派生モジュールの外部公開を
+`Get-SumiGuardExecutionRecord` と `Get-SumiGuardCollectionFailureNotice` の2関数に
+限定しました。内部の書込み関数がファイル内に残る暫定的な互換構成であり、
+最終的なコード分離は今後の課題です。
 
 書込み側ロック、公開APIの戻り値、本文を返さない通常読取り、明示復号APIは変更していません。
 一時プロジェクトで検証済みですが、本プロジェクトへ配置後の実行確認は未実施です。
