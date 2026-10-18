@@ -97,8 +97,9 @@ try {
     [IO.File]::WriteAllText($checkpoint, $snapshotJson, $script:Utf8)
 
     $script:Stage = 'SIGN_WITH_TEST_KEY'
-    $rsa = [Security.Cryptography.RSA]::Create()
-    $rsa.KeySize = 3072
+    # Windows PowerShell 5.1 uses RSACryptoServiceProvider; setting KeySize
+    # after construction does not change its generated key size.
+    $rsa = New-Object Security.Cryptography.RSACryptoServiceProvider(3072)
     $public = $rsa.ExportParameters($false)
     if ($public.Modulus.Length -ne 384) { throw 'EXPECTED_3072_BIT_TEST_KEY' }
     $publicRecord = [ordered]@{
