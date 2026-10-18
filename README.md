@@ -40,6 +40,20 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 自動検知、OS全体の監視、侵害の自動遮断を保証するものではありません。
 詳細は `docs/27-security-hardening-20261018.md` を参照してください。
 
+## 署名鍵の更新・失効検証（オフライン）
+
+監査ログの署名者を、独立したルート鍵による署名済み信頼一覧で認証する
+`tools/Test-SumiGuardSignerTrust.ps1` を追加しました。
+署名者のACTIVE/RETIRED/REVOKEDを区別し、公開鍵のSHA-256、
+信頼一覧の署名・有効期間、**外部管理の最小更新番号**を検査します。
+
+`tools/Test-SumiGuardTrustedCheckpoint.ps1` はこの認証を必須にした後で、
+既存の署名済みチェックポイント・有効期限ポリシーを確認する
+**読取り専用の厳格な入口**です。信頼できる現在時刻・最小連番・
+最小更新番号を外部から渡せなければ、巻き戻し防止の保証はできません。
+実運用のルート鍵、署名サーバー、時刻配信サービスは未実装です。
+仕様と利用上の制限は `docs/31-signer-trust-lifecycle.md` を参照してください。
+
 ## 署名されたチェックポイントの有効期限・巻き戻し確認
 
 署名検証ツールに、署名済みポリシーの連番と有効期間を検証する
@@ -100,6 +114,10 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 - `docs/28-audit-integrity-readonly.md`: 監査ログの読取り専用構造検証・基準値照合と限界
 - `docs/29-signed-audit-checkpoint.md`: 認証された監査チェックポイントの仕様と限界
 - `docs/30-signed-checkpoint-freshness.md`: 署名付き連番・有効期間・信頼できる時刻/下限の要件
+- `docs/31-signer-trust-lifecycle.md`: オフライン鍵失効・更新・ルート鍵/時刻の信頼境界
+- `tools/Test-SumiGuardSignerTrust.ps1`: ルート署名された署名者一覧を検証
+- `tools/Test-SumiGuardTrustedCheckpoint.ps1`: 鍵認証・署名済み連番/期限を必須にする検証入口
+- `tests/Invoke-SignerTrustLifecycleTests.ps1`: 合成鍵で鍵更新・失効を検証
 - `tools/Test-SumiGuardSignedCheckpoint.ps1`: 公開鍵指紋・RSA署名・監査ログの整合性照合
 - `tests/Invoke-SignedCheckpointTests.ps1`: 使い捨てRSA鍵を使った合成回帰テスト
 - `tools/Test-SumiGuardAuditIntegrity.ps1`: 監査ログを変更しない照合CLI

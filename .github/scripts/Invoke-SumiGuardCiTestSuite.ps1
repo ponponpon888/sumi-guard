@@ -40,6 +40,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-PowerShellCommandCliTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ReadOnlyModuleExportTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-SignedCheckpointTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-SignerTrustLifecycleTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-RealHookRunnerSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' }
 )
 

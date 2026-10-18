@@ -96,3 +96,13 @@ stale sequence, expiry, not-yet-valid time, non-UTC reference, missing external
 sequence floor, modified policy bytes, and modified policy signature.
 Windows GitHub Actions tests synthetic temp data only, with no operational
 private-key export or production mutations.
+
+## Offline key rotation/revocation verification
+
+The optional signed-checkpoint verifier can still be invoked directly for
+backward compatibility; direct calls do not enforce a root-signed signer
+lifecycle policy. For key authorization, use
+`tools/Test-SumiGuardTrustedCheckpoint.ps1`. It verifies a root-signed
+trust manifest before running the existing signed-checkpoint and freshness
+checks, with no private keys or network requests.
+See `docs/31-signer-trust-lifecycle.md`.
