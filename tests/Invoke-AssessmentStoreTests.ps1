@@ -108,7 +108,6 @@ try {
     . $script:ShowScript -StorePath $script:AssessmentStoreTestRoot
 
     $assessmentModule = @(Get-Module -Name 'SumiGuard.CommandAssessment' -All)[0]
-    $storeModule = @(Get-Module -Name 'SumiGuard.AssessmentStore' -All)[0]
     $mainStore = Join-Path $script:AssessmentStoreTestRoot 'main-store'
     $createMain = New-SumiGuardAssessmentStore -StorePath $mainStore
     Assert-SumiGuardAssessmentStoreTest ($createMain.success) 'MAIN_STORE_CREATE'
@@ -143,6 +142,12 @@ try {
     $managed = Invoke-SumiGuardSyntheticAssessment `
         -CommandText "Write-Output 'managed fixed sample'" `
         -ExecutionId '00000000000000000000000000000016'
+    $hookAssessed = Invoke-SumiGuardSyntheticAssessment `
+        -CommandText "Write-Output 'hook fixed sample'" `
+        -ExecutionId '00000000000000000000000000000017'
+    $hookUnlinked = Invoke-SumiGuardSyntheticAssessment `
+        -CommandText "Write-Output 'hook unlinked sample'" `
+        -ExecutionId '00000000000000000000000000000018'
 
     $secretMarker = 'SYNTHETIC_SECRET_56a07f'
     $urlMarker = 'https://example.invalid/private?token=SYNTHETIC_TOKEN_84'
@@ -215,6 +220,57 @@ try {
             'MANAGED_EXECUTION_ID'
     }
 
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'HOOK_ORIGIN_IS_SEPARATE_AND_NEEDS_RELATION' -Body {
+        $save = Save-SumiGuardAssessment `
+            -StorePath $mainStore `
+            -Assessment $hookAssessed `
+            -EvaluationOrigin 'CODEX_PRETOOLUSE_HOOK' `
+            -RelatedExecutionId '00000000000000000000000000000017'
+        Assert-SumiGuardAssessmentStoreTest ($save.success) 'HOOK_SAVE'
+        $read = Get-SumiGuardAssessmentRecord `
+            -StorePath $mainStore `
+            -AssessmentId $hookAssessed.record_id
+        Assert-SumiGuardAssessmentStoreTest ($read.success) 'HOOK_READ'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($read.records[0].evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') `
+            'HOOK_ORIGIN'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($read.records[0].execution_id -ceq '00000000000000000000000000000017') `
+            'HOOK_EXECUTION_ID'
+
+        # The reason the value exists: in one store, a record written by the
+        # pre-execution hook and a record written by the managed runner stay
+        # separable instead of both reading as MANAGED_EXECUTION.
+        $all = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        Assert-SumiGuardAssessmentStoreTest ($all.success) 'HOOK_READ_ALL'
+        Assert-SumiGuardAssessmentStoreTest `
+            (@($all.records | Where-Object {
+                $_.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK' }).Count -eq 1) `
+            'HOOK_ORIGIN_COUNT'
+        Assert-SumiGuardAssessmentStoreTest `
+            (@($all.records | Where-Object {
+                $_.evaluation_origin -ceq 'MANAGED_EXECUTION' }).Count -eq 1) `
+            'MANAGED_ORIGIN_STILL_SEPARATE'
+
+        # Without a related execution the record would point at nothing, so it is
+        # rejected rather than stored as an unlinked claim.
+        $before = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        $unlinked = Save-SumiGuardAssessment `
+            -StorePath $mainStore `
+            -Assessment $hookUnlinked `
+            -EvaluationOrigin 'CODEX_PRETOOLUSE_HOOK'
+        $after = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+        Assert-SumiGuardAssessmentStoreTest `
+            (-not $unlinked.success) `
+            'HOOK_UNLINKED_SUCCESS_FALSE'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($unlinked.status -ceq 'INVALID_ASSESSMENT') `
+            'HOOK_UNLINKED_STATUS'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($after.record_count -eq $before.record_count) `
+            'HOOK_UNLINKED_NOT_STORED'
+    }
+
     Invoke-SumiGuardAssessmentStoreTestCase -Name 'DUPLICATE_ID_IS_REJECTED' -Body {
         $before = Get-SumiGuardAssessmentRecord -StorePath $mainStore
         $duplicate = Save-SumiGuardAssessment `
@@ -266,6 +322,12 @@ try {
             -ExecutionId '00000000000000000000000000000017'
         $recordPath = Join-Path $mainStore 'assessments.ndjson'
         $beforeHash = (Get-FileHash -LiteralPath $recordPath -Algorithm SHA256).Hash
+        # Resolved here, not at startup. The display CLI re-imports the store
+        # module with -Force, which replaces the instance, and a test seam set on
+        # the replaced instance would silently have no effect: the forced failure
+        # would not happen and this case would report a passing save as a
+        # preserved store.
+        $storeModule = @(Get-Module -Name 'SumiGuard.AssessmentStore' -All)[0]
         try {
             $storeModule.SessionState.PSVariable.Set(
                 'SumiGuardAssessmentStoreTestForceAtomicWriteFailure',
@@ -432,6 +494,33 @@ try {
         Assert-SumiGuardAssessmentStoreTest `
             ($partialDisplay.text.Contains('制約: 一部は評価不能です')) `
             'DISPLAY_PARTIAL_CONSTRAINT'
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'DISPLAY_SEPARATES_HOOK_ORIGIN' -Body {
+        $hookDisplay = Get-SumiGuardDisplayOutput `
+            -StorePath $mainStore `
+            -AssessmentId $hookAssessed.record_id
+        $managedDisplay = Get-SumiGuardDisplayOutput `
+            -StorePath $mainStore `
+            -AssessmentId $managed.record_id
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.exit_code -eq 0) `
+            'HOOK_DISPLAY_EXIT_CODE'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.text.Contains('種別: フック経由の実行前評価')) `
+            'HOOK_DISPLAY_LABEL'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($hookDisplay.text.Contains('実行されたかどうかは、この記録では確認できません')) `
+            'HOOK_DISPLAY_EXECUTION_UNKNOWN_NOTICE'
+        Assert-SumiGuardAssessmentStoreTest `
+            (-not $hookDisplay.text.Contains('説明未定義')) `
+            'HOOK_DISPLAY_HAS_NO_UNDEFINED_LABEL'
+        Assert-SumiGuardAssessmentStoreTest `
+            ($managedDisplay.text.Contains('種別: 管理下実行の評価')) `
+            'MANAGED_DISPLAY_LABEL_UNCHANGED'
+        Assert-SumiGuardAssessmentStoreTest `
+            (-not $managedDisplay.text.Contains('フック経由')) `
+            'MANAGED_DISPLAY_NOT_LABELLED_AS_HOOK'
     }
 
     Invoke-SumiGuardAssessmentStoreTestCase -Name 'UNKNOWN_CODES_ARE_NOT_GUESSED' -Body {
