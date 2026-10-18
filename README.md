@@ -51,6 +51,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-17-assessment-origin-hook-value.md`: フック記録の `evaluation_origin` 追加の測定結果（実運用フックからの動作は未検証）
+- `measurements/2026-10-18-empty-catch-policy-and-verb-rename.md`: 空のcatch方針の判断と内部例外関数の改名の測定結果（デモとキットの失敗経路は未実行）
 - `measurements/2026-10-03-sumi-guard-prototype.md`: 最小試作の測定結果
 - `measurements/2026-10-03-sumi-guard-final-code-correspondence.md`: 最終コードと測定結果の対応確認
 - `measurements/2026-10-03-local-store-module-tests.md`: 保存モジュールの単体試験結果
