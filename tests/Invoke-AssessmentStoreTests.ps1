@@ -113,6 +113,69 @@ try {
     $createMain = New-SumiGuardAssessmentStore -StorePath $mainStore
     Assert-SumiGuardAssessmentStoreTest ($createMain.success) 'MAIN_STORE_CREATE'
 
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'ASSESSMENT_STORE_PRIVATE_ACL' -Body {
+        $acl = Get-Acl -LiteralPath $mainStore
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $allowed = @($sid, 'S-1-5-18')
+        Assert-SumiGuardAssessmentStoreTest ([bool]$acl.AreAccessRulesProtected) 'ACL_NOT_PROTECTED'
+        foreach ($file in @(
+            $mainStore,
+            (Join-Path $mainStore '.sumi-guard-assessment-store.json'),
+            (Join-Path $mainStore '.sumi-guard-assessment-store.lock'),
+            (Join-Path $mainStore 'assessments.ndjson'))) {
+            $fileAcl = Get-Acl -LiteralPath $file
+            $rules = @($fileAcl.GetAccessRules($true, $true,
+                [Security.Principal.SecurityIdentifier]))
+            Assert-SumiGuardAssessmentStoreTest ($rules.Count -gt 0) 'MISSING_ACL_RULES'
+            foreach ($rule in $rules) {
+                Assert-SumiGuardAssessmentStoreTest (
+                    $allowed -ccontains $rule.IdentityReference.Value -and
+                    $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow
+                ) 'UNEXPECTED_ACL_RULE'
+            }
+        }
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'TAMPERED_ASSESSMENT_FILE_ACL_IS_REJECTED' -Body {
+        $recordFile = Join-Path $mainStore 'assessments.ndjson'
+        $originalAcl = Get-Acl -LiteralPath $recordFile
+        try {
+            $tamperedAcl = Get-Acl -LiteralPath $recordFile
+            $users = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
+            $otherRule = New-Object Security.AccessControl.FileSystemAccessRule(
+                $users,
+                [Security.AccessControl.FileSystemRights]::Read,
+                [Security.AccessControl.AccessControlType]::Allow)
+            [void]$tamperedAcl.AddAccessRule($otherRule)
+            Set-Acl -LiteralPath $recordFile -AclObject $tamperedAcl -ErrorAction Stop
+            $read = Get-SumiGuardAssessmentRecord -StorePath $mainStore
+            Assert-SumiGuardAssessmentStoreTest (
+                -not $read.success -and $read.status -ceq 'STORE_ACL_INVALID'
+            ) 'TAMPERED_FILE_ACL_ACCEPTED'
+        }
+        finally {
+            Set-Acl -LiteralPath $recordFile -AclObject $originalAcl -ErrorAction Stop
+        }
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'LEGACY_UNPROTECTED_DIRECTORY_REJECTED' -Body {
+        $legacyStore = Join-Path $script:AssessmentStoreTestRoot 'legacy-acl-store'
+        $created = New-SumiGuardAssessmentStore -StorePath $legacyStore
+        Assert-SumiGuardAssessmentStoreTest ($created.success) 'LEGACY_FIXTURE_CREATE'
+        $acl = Get-Acl -LiteralPath $legacyStore
+        $acl.SetAccessRuleProtection($false, $true)
+        Set-Acl -LiteralPath $legacyStore -AclObject $acl -ErrorAction Stop
+        $read = Get-SumiGuardAssessmentRecord -StorePath $legacyStore
+        Assert-SumiGuardAssessmentStoreTest (
+            -not $read.success -and $read.status -ceq 'STORE_ACL_INVALID'
+        ) 'LEGACY_ACL_ACCEPTED'
+        $retry = New-SumiGuardAssessmentStore -StorePath $legacyStore
+        Assert-SumiGuardAssessmentStoreTest (
+            -not $retry.success -and $retry.status -ceq 'STORE_ACL_INVALID'
+        ) 'LEGACY_ACL_AUTO_REPAIRED'
+    }
+
+
     $detected = Invoke-SumiGuardSyntheticAssessment `
         -CommandText 'Set-MpPreference -DisableRealtimeMonitoring $true' `
         -ExecutionId '00000000000000000000000000000011'
