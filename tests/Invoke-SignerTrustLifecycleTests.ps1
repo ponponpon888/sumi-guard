@@ -6,6 +6,8 @@ $ErrorActionPreference = 'Stop'
 $script:Repo = Split-Path -Parent $PSScriptRoot
 $script:TrustTool = Join-Path $script:Repo 'tools\Test-SumiGuardSignerTrust.ps1'
 $script:Wrapper = Join-Path $script:Repo 'tools\Test-SumiGuardTrustedCheckpoint.ps1'
+$script:ReceiptVerifier = Join-Path $script:Repo 'tools\Test-SumiGuardAuthorityReceipt.ps1'
+$script:AttestedWrapper = Join-Path $script:Repo 'tools\Test-SumiGuardAttestedCheckpoint.ps1'
 $script:AuditTool = Join-Path $script:Repo 'tools\Test-SumiGuardAuditIntegrity.ps1'
 $script:Ps51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $script:Utf8 = New-Object Text.UTF8Encoding($false,$true)
@@ -17,6 +19,7 @@ $failure = $null
 $script:RootRsa = $null
 $script:SignerA = $null
 $script:SignerB = $null
+$script:AuthorityRsa = $null
 $script:TrustedUtc = '2026-10-18T09:00:00Z'
 $script:ExternalEpochFloor = 42
 
@@ -133,6 +136,90 @@ function Invoke-FullFixture {
     }
 }
 
+function Write-AuthorityReceiptFixture {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions','',
+        Justification = 'Only signs synthetic receipt JSON under a GUID test directory.')]
+    param(
+        [string]$Nonce = $script:AuthorityChallenge,
+        [string]$TrustedAt = '2026-10-18T09:00:00Z',
+        [string]$Issued = '2026-10-18T08:59:59Z',
+        [string]$Expires = '2026-10-18T09:01:59Z'
+    )
+    $storeMarker = Join-Path $script:StorePath '.sumi-guard-execution-store.json'
+    $message = [ordered]@{
+        schema_version = 1
+        record_type = 'SumiGuardAuthorityReceipt'
+        purpose = 'CHECKPOINT_TRUST_STATE'
+        challenge_nonce = $Nonce
+        store_kind = 'Execution'
+        store_marker_sha256 = (Get-FileHash -LiteralPath $storeMarker -Algorithm SHA256).Hash.ToLowerInvariant()
+        trust_manifest_sha256 = (Get-FileHash -LiteralPath $script:TrustManifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+        root_public_key_sha256 = $script:RootPin
+        minimum_manifest_epoch = 42
+        minimum_checkpoint_sequence = 42
+        trusted_at_utc = $TrustedAt
+        issued_at_utc = $Issued
+        expires_at_utc = $Expires
+    }
+    [IO.File]::WriteAllText($script:ReceiptPath,
+        ($message | ConvertTo-Json -Compress),$script:Utf8)
+    Write-SignedFixture -Rsa $script:AuthorityRsa -InputPath $script:ReceiptPath -SignaturePath $script:ReceiptSigPath
+}
+
+function Invoke-ReceiptFixture {
+    param(
+        [string]$Challenge = $script:AuthorityChallenge,
+        [string]$AuthorityPin = $script:AuthorityPin,
+        [string]$RootPin = $script:RootPin
+    )
+    $parts = @(
+        '-NoLogo','-NoProfile','-NonInteractive','-File',$script:ReceiptVerifier,
+        '-StoreKind','Execution','-StorePath',$script:StorePath,
+        '-TrustManifestPath',$script:TrustManifestPath,
+        '-ExpectedRootPublicKeySha256',$RootPin,
+        '-AuthorityPublicKeyPath',$script:AuthorityPublicPath,
+        '-ExpectedAuthorityPublicKeySha256',$AuthorityPin,
+        '-ReceiptPath',$script:ReceiptPath,
+        '-ReceiptSignaturePath',$script:ReceiptSigPath,
+        '-ExpectedChallengeNonce',$Challenge)
+    $lines = @(& $script:Ps51 @parts)
+    $childExit = $LASTEXITCODE
+    return [pscustomobject]@{
+        exit_code = $childExit
+        data = (($lines -join [Environment]::NewLine).Trim() | ConvertFrom-Json -ErrorAction Stop)
+    }
+}
+
+function Invoke-AttestedFixture {
+    param(
+        [string]$Challenge = $script:AuthorityChallenge,
+        [string]$AuthorityPin = $script:AuthorityPin
+    )
+    $parts = @(
+        '-NoLogo','-NoProfile','-NonInteractive','-File',$script:AttestedWrapper,
+        '-StoreKind','Execution','-StorePath',$script:StorePath,
+        '-CheckpointPath',$script:CheckpointPath,
+        '-SignaturePath',$script:SignatureA,
+        '-SignerPublicKeyPath',$script:SignerKeyA,
+        '-PolicyPath',$script:PolicyPath,
+        '-PolicySignaturePath',$script:PolicySignatureA,
+        '-RootPublicKeyPath',$script:RootPublicPath,
+        '-ExpectedRootPublicKeySha256',$script:RootPin,
+        '-TrustManifestPath',$script:TrustManifestPath,
+        '-TrustManifestSignaturePath',$script:TrustSigPath,
+        '-AuthorityPublicKeyPath',$script:AuthorityPublicPath,
+        '-ExpectedAuthorityPublicKeySha256',$AuthorityPin,
+        '-ReceiptPath',$script:ReceiptPath,
+        '-ReceiptSignaturePath',$script:ReceiptSigPath,
+        '-ExpectedChallengeNonce',$Challenge)
+    $lines = @(& $script:Ps51 @parts)
+    $childExit = $LASTEXITCODE
+    return [pscustomobject]@{
+        exit_code = $childExit
+        data = (($lines -join [Environment]::NewLine).Trim() | ConvertFrom-Json -ErrorAction Stop)
+    }
+}
+
 try {
     if (-not $work.StartsWith($tempRoot,[StringComparison]::OrdinalIgnoreCase) -or
         (Split-Path -Leaf $work) -cnotmatch '^sumi-guard-trust-lifecycle-[0-9a-f]{32}$') {
@@ -207,6 +294,143 @@ try {
     $script:TrustManifestPath = Join-Path $work 'root-signed-trust.json'
     $script:TrustSigPath = Join-Path $work 'root-signed-trust.sig'
     Write-TrustManifestFixture
+
+
+    # Independent synthetic trust-state authority; only its public key leaves memory.
+    $script:Stage = 'AUTHORITY_SETUP'
+    $script:AuthorityRsa = New-Object Security.Cryptography.RSACryptoServiceProvider(3072)
+    $script:AuthorityRsa.PersistKeyInCsp = $false
+    $script:AuthorityPublicPath = Join-Path $work 'authority-public.json'
+    $script:AuthorityPin = Write-PublicKeyFixture -Rsa $script:AuthorityRsa -Path $script:AuthorityPublicPath
+    $script:RootPin = $rootPin
+    $script:SignerKeyA = $keyAPath
+    $script:SignatureA = $sigA
+    $script:PolicySignatureA = $policySigA
+    $script:AuthorityChallenge = ('a' * 64)
+    $script:ReceiptPath = Join-Path $work 'authority-receipt.json'
+    $script:ReceiptSigPath = Join-Path $work 'authority-receipt.sig'
+    Write-AuthorityReceiptFixture
+
+    $script:Stage = 'SIGNED_RECEIPT'
+    $acceptedReceipt = Invoke-ReceiptFixture
+    Add-Check -Name 'ROOT_INDEPENDENT_SIGNED_RECEIPT_ACCEPTED' -Pass (
+        $acceptedReceipt.exit_code -eq 0 -and
+        $acceptedReceipt.data.status -ceq 'SIGNED_RECEIPT_ACCEPTED' -and
+        $acceptedReceipt.data.receipt_signature_verified -eq $true -and
+        $acceptedReceipt.data.challenge_matches -eq $true -and
+        $acceptedReceipt.data.store_binding_verified -eq $true -and
+        $acceptedReceipt.data.manifest_binding_verified -eq $true -and
+        $acceptedReceipt.data.challenge_origin_verified -eq $false)
+
+    $script:Stage = 'ATTESTED_FULL_VERIFICATION'
+    $attested = Invoke-AttestedFixture
+    Add-Check -Name 'SIGNED_RECEIPT_AUTHORIZES_COMPLETE_READONLY_CHECK' -Pass (
+        $attested.exit_code -eq 0 -and
+        $attested.data.status -ceq 'ATTESTED_CHECKPOINT_MATCH' -and
+        $attested.data.signed_receipt_verified -eq $true -and
+        $attested.data.signer_trust_verified -eq $true -and
+        $attested.data.checkpoint_matches -eq $true -and
+        $attested.data.private_key_loaded -eq $false)
+
+    $script:Stage = 'CHALLENGE_SWAP'
+    $badNonce = ('b' * 64)
+    $wrongChallenge = Invoke-ReceiptFixture -Challenge $badNonce
+    Add-Check -Name 'CHALLENGE_NONCE_MISMATCH_REJECTED' -Pass (
+        $wrongChallenge.exit_code -eq 2 -and
+        $wrongChallenge.data.code -ceq 'CHALLENGE_MISMATCH')
+    $strictWrongChallenge = Invoke-AttestedFixture -Challenge $badNonce
+    Add-Check -Name 'WRONG_CHALLENGE_NEVER_REACHES_CHECKPOINT' -Pass (
+        $strictWrongChallenge.exit_code -eq 2 -and
+        $strictWrongChallenge.data.status -ceq 'AUTHORITY_RECEIPT_REJECTED' -and
+        $strictWrongChallenge.data.signer_trust_verified -eq $false)
+
+    $script:Stage = 'AUTHORITY_PIN_SWAP'
+    $badAuthorityPin = if ($script:AuthorityPin[0] -ceq 'a') {
+        'b' + $script:AuthorityPin.Substring(1)
+    } else { 'a' + $script:AuthorityPin.Substring(1) }
+    $wrongAuthority = Invoke-ReceiptFixture -AuthorityPin $badAuthorityPin
+    Add-Check -Name 'INDEPENDENT_AUTHORITY_PIN_MISMATCH_REJECTED' -Pass (
+        $wrongAuthority.exit_code -eq 2 -and
+        $wrongAuthority.data.code -ceq 'AUTHORITY_PIN_MISMATCH')
+
+    $script:Stage = 'CHALLENGE_FORMAT'
+    $badFormat = Invoke-ReceiptFixture -Challenge 'invalid'
+    Add-Check -Name 'INVALID_NONCE_FORMAT_REJECTED' -Pass (
+        $badFormat.exit_code -eq 2 -and
+        $badFormat.data.code -ceq 'TRUST_INPUT_INVALID')
+
+    $script:Stage = 'AUTHORITY_KEY_SEPARATION'
+    $sameKey = Invoke-ReceiptFixture -AuthorityPin $script:RootPin
+    Add-Check -Name 'AUTHORITY_AND_ROOT_MUST_BE_SEPARATE_KEYS' -Pass (
+        $sameKey.exit_code -eq 2 -and
+        $sameKey.data.code -ceq 'AUTHORITY_KEY_NOT_SEPARATE')
+
+    $script:Stage = 'ROOT_PIN_BINDING'
+    $badRootPin = if ($script:RootPin[0] -ceq 'a') {
+        'b' + $script:RootPin.Substring(1)
+    } else { 'a' + $script:RootPin.Substring(1) }
+    $wrongRootBinding = Invoke-ReceiptFixture -RootPin $badRootPin
+    Add-Check -Name 'RECEIPT_BINDS_EXPECTED_ROOT_PUBLIC_KEY' -Pass (
+        $wrongRootBinding.exit_code -eq 2 -and
+        $wrongRootBinding.data.code -ceq 'ROOT_BINDING_MISMATCH')
+
+    $script:Stage = 'SIGNED_RECEIPT_MUTATION'
+    $receiptOriginal = [IO.File]::ReadAllText($script:ReceiptPath,$script:Utf8)
+    [IO.File]::WriteAllText($script:ReceiptPath,
+        $receiptOriginal.Replace('"minimum_manifest_epoch":42','"minimum_manifest_epoch":43'),
+        $script:Utf8)
+    $tamperedReceipt = Invoke-ReceiptFixture
+    Add-Check -Name 'RECEIPT_EDIT_WITH_OLD_SIGNATURE_REJECTED' -Pass (
+        $tamperedReceipt.exit_code -eq 2 -and
+        $tamperedReceipt.data.code -ceq 'RECEIPT_SIGNATURE_INVALID')
+    [IO.File]::WriteAllText($script:ReceiptPath,$receiptOriginal,$script:Utf8)
+
+    $script:Stage = 'MANIFEST_BINDING'
+    Write-TrustManifestFixture -Epoch 43
+    $differentManifest = Invoke-ReceiptFixture
+    Add-Check -Name 'RECEIPT_BINDS_TRUST_MANIFEST_DIGEST' -Pass (
+        $differentManifest.exit_code -eq 2 -and
+        $differentManifest.data.code -ceq 'MANIFEST_BINDING_MISMATCH')
+    Write-TrustManifestFixture -Epoch 42
+
+    $script:Stage = 'ATTESTED_REVOKED_SIGNER'
+    Write-TrustManifestFixture -StateA REVOKED -Epoch 43
+    Write-AuthorityReceiptFixture
+    $revokeAttested = Invoke-AttestedFixture
+    Add-Check -Name 'ATTESTED_GATEWAY_REFUSES_REVOKED_SIGNER' -Pass (
+        $revokeAttested.exit_code -eq 1 -and
+        $revokeAttested.data.status -ceq 'CHECKPOINT_REJECTED' -and
+        $revokeAttested.data.code -ceq 'SIGNER_REVOKED' -and
+        $revokeAttested.data.signed_receipt_verified -eq $true -and
+        $revokeAttested.data.signer_trust_verified -eq $false)
+    Write-TrustManifestFixture -Epoch 42
+    Write-AuthorityReceiptFixture
+
+    $script:Stage = 'STORE_MARKER_BINDING'
+    $markerPath = Join-Path $script:StorePath '.sumi-guard-execution-store.json'
+    $markerOriginal = [IO.File]::ReadAllText($markerPath,$script:Utf8)
+    [IO.File]::WriteAllText($markerPath,($markerOriginal + ' '),$script:Utf8)
+    $differentStore = Invoke-ReceiptFixture
+    Add-Check -Name 'RECEIPT_BINDS_STORE_MARKER_DIGEST' -Pass (
+        $differentStore.exit_code -eq 2 -and
+        $differentStore.data.code -ceq 'STORE_BINDING_MISMATCH')
+    [IO.File]::WriteAllText($markerPath,$markerOriginal,$script:Utf8)
+
+    $script:Stage = 'SIGNED_WIDE_WINDOW'
+    Write-AuthorityReceiptFixture -Expires '2026-10-18T09:02:01Z'
+    $wide = Invoke-ReceiptFixture
+    Add-Check -Name 'SIGNED_RECEIPT_WINDOW_OVER_TWO_MINUTES_REJECTED' -Pass (
+        $wide.exit_code -eq 2 -and
+        $wide.data.code -ceq 'RECEIPT_WINDOW_INVALID')
+    Write-AuthorityReceiptFixture
+
+    $script:Stage = 'SIGNED_NONUTC_CLAIM'
+    Write-AuthorityReceiptFixture -TrustedAt '2026-10-18T18:00:00+09:00'
+    $wrongUtc = Invoke-ReceiptFixture
+    Add-Check -Name 'NON_UTC_TIME_CLAIM_REJECTED' -Pass (
+        $wrongUtc.exit_code -eq 2 -and
+        $wrongUtc.data.code -ceq 'RECEIPT_TIME_INVALID')
+    Write-AuthorityReceiptFixture
 
     $script:Stage = 'ACTIVE_CHECKPOINT'
     $active = Invoke-FullFixture -SignerPath $keyAPath -CheckpointSig $sigA -PolicySig $policySigA -RootPin $rootPin
@@ -305,7 +529,7 @@ catch {
     }
 }
 finally {
-    foreach ($privateKey in @($script:RootRsa,$script:SignerA,$script:SignerB)) {
+    foreach ($privateKey in @($script:RootRsa,$script:SignerA,$script:SignerB,$script:AuthorityRsa)) {
         if ($null -ne $privateKey) { $privateKey.Dispose() }
     }
     if (Test-Path -LiteralPath $work) {

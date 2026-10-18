@@ -40,6 +40,19 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 自動検知、OS全体の監視、侵害の自動遮断を保証するものではありません。
 詳細は `docs/27-security-hardening-20261018.md` を参照してください。
 
+## 署名済みの外部時刻・連番情報を検証（試作）
+
+`tools/Test-SumiGuardAuthorityReceipt.ps1` は、監視PCとは独立した
+信頼情報発行者のRSA公開鍵指紋・署名を検証し、監査ストアのマーカーと
+鍵失効一覧に紐付いた **時刻の主張・最小連番・最小epoch** を確認します。
+
+`tools/Test-SumiGuardAttestedCheckpoint.ps1` は、その署名済み情報を確認
+してから既存の鍵失効・監査ログの検証器を呼び出す読取り専用入口です。
+ただし発行者の信頼性、毎回新しく発行するチャレンジの安全性、
+ネットワーク配信、リアルタイムの時刻取得は**未実装**です。
+古い署名を再提示されない保証はまだありません。
+詳細は `docs/32-authority-receipt.md` を参照してください。
+
 ## 署名鍵の更新・失効検証（オフライン）
 
 監査ログの署名者を、独立したルート鍵による署名済み信頼一覧で認証する
@@ -115,6 +128,9 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 - `docs/29-signed-audit-checkpoint.md`: 認証された監査チェックポイントの仕様と限界
 - `docs/30-signed-checkpoint-freshness.md`: 署名付き連番・有効期間・信頼できる時刻/下限の要件
 - `docs/31-signer-trust-lifecycle.md`: オフライン鍵失効・更新・ルート鍵/時刻の信頼境界
+- `docs/32-authority-receipt.md`: 外部署名者の時刻・連番受領証とチャレンジの信頼境界
+- `tools/Test-SumiGuardAuthorityReceipt.ps1`: 外部署名された時刻・連番情報を検証
+- `tools/Test-SumiGuardAttestedCheckpoint.ps1`: 認証した情報を厳格なチェックポイント検証に渡す
 - `tools/Test-SumiGuardSignerTrust.ps1`: ルート署名された署名者一覧を検証
 - `tools/Test-SumiGuardTrustedCheckpoint.ps1`: 鍵認証・署名済み連番/期限を必須にする検証入口
 - `tests/Invoke-SignerTrustLifecycleTests.ps1`: 合成鍵で鍵更新・失効を検証
