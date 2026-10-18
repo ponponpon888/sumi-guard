@@ -95,6 +95,9 @@ function Test-SumiGuardAssessmentPathContainsReparsePoint {
 # Assessment records contain execution identifiers and detection metadata.
 # Use the same current-user/SYSTEM DACL boundary as the encrypted body store.
 function Set-SumiGuardAssessmentStoreAcl {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Internal helper runs only during explicit store initialization; fail closed if ACL setup fails.')]
     param([Parameter(Mandatory = $true)][string]$StorePath)
 
     $userSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
