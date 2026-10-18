@@ -60,3 +60,12 @@ This implementation has no private-key operations, no signing-key storage,
 no remote service, no audit-file modifications and no hook activation.
 The synthetic CI test creates a disposable RSA key in memory and does not
 export the private part or use any live audit data.
+
+## Optional authenticated freshness policy
+
+The same read-only verifier can additionally validate a **separately signed**
+policy that binds the checkpoint SHA-256 to a monotonic sequence number,
+UTC issue time, and expiry. This requires an independently trusted minimum
+sequence and UTC reference time at invocation. The original signature-only
+mode remains available and provides **no** anti-rollback or expiry assurance.
+See docs/30-signed-checkpoint-freshness.md for schema, examples and tests.

@@ -40,6 +40,17 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 自動検知、OS全体の監視、侵害の自動遮断を保証するものではありません。
 詳細は `docs/27-security-hardening-20261018.md` を参照してください。
 
+## 署名されたチェックポイントの有効期限・巻き戻し確認
+
+署名検証ツールに、署名済みポリシーの連番と有効期間を検証する
+**オプション機能**を追加しました。基準値とポリシーの両方を
+独立環境で署名し、PCに渡すのは公開鍵・署名・ポリシーだけです。
+
+最小連番（巻き戻し判定の下限）と現在時刻は**別の信頼できる経路から入力**し、
+不足した場合は検証を拒否します。ローカルPCの時計や任意に変更できる
+設定値だけでは、巻き戻し防止の保証にはなりません。
+`docs/30-signed-checkpoint-freshness.md` に詳細を記載しました。
+
 ## 署名された監査チェックポイントの検証
 
 `tools/Test-SumiGuardSignedCheckpoint.ps1` は、別の信頼環境で署名された
@@ -88,6 +99,7 @@ ACLを暗黙に書き換えず `STORE_ACL_INVALID` で拒否します。
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
 - `docs/28-audit-integrity-readonly.md`: 監査ログの読取り専用構造検証・基準値照合と限界
 - `docs/29-signed-audit-checkpoint.md`: 認証された監査チェックポイントの仕様と限界
+- `docs/30-signed-checkpoint-freshness.md`: 署名付き連番・有効期間・信頼できる時刻/下限の要件
 - `tools/Test-SumiGuardSignedCheckpoint.ps1`: 公開鍵指紋・RSA署名・監査ログの整合性照合
 - `tests/Invoke-SignedCheckpointTests.ps1`: 使い捨てRSA鍵を使った合成回帰テスト
 - `tools/Test-SumiGuardAuditIntegrity.ps1`: 監査ログを変更しない照合CLI

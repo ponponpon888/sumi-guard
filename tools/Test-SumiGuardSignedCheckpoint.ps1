@@ -8,13 +8,36 @@ param(
     [Parameter(Mandatory = $true)][string]$CheckpointPath,
     [Parameter(Mandatory = $true)][string]$SignaturePath,
     [Parameter(Mandatory = $true)][string]$PublicKeyPath,
-    [Parameter(Mandatory = $true)][string]$ExpectedPublicKeySha256
+    [Parameter(Mandatory = $true)][string]$ExpectedPublicKeySha256,
+    # Optional signed freshness policy. An independently protected sequence floor
+    # and reference time are mandatory whenever this mode is used.
+    [string]$PolicyPath,
+    [string]$PolicySignaturePath,
+    [long]$MinimumTrustedSequence = 0,
+    [string]$TrustedNowUtc
 )
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
 $script:Utf8 = New-Object Text.UTF8Encoding($false, $true)
 $script:AuditVerifier = Join-Path $PSScriptRoot 'Test-SumiGuardAuditIntegrity.ps1'
 $script:PowerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+
+# The caller must provide this UTC reference from an independent trusted source.
+# This parser cannot establish the trustworthiness of the caller's clock.
+function ConvertTo-SumiGuardPolicyUtc {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    if ($Value -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?Z$') {
+        throw 'POLICY_TIME_INVALID'
+    }
+    $parsed = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParse(
+        $Value, [Globalization.CultureInfo]::InvariantCulture,
+        [Globalization.DateTimeStyles]::RoundtripKind, [ref]$parsed)) {
+        throw 'POLICY_TIME_INVALID'
+    }
+    if ($parsed.Offset -ne [TimeSpan]::Zero) { throw 'POLICY_TIME_INVALID' }
+    return $parsed
+}
 
 function Test-SumiGuardNoReparse {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -86,7 +109,13 @@ $exitCode = 2
 $keyPinVerified = $false
 $signatureVerified = $false
 $storeMatched = $false
+$policySignatureVerified = $false
+$policyFloorChecked = $false
+$policyTimeChecked = $false
 $baselineHeld = $null
+[byte[]]$policyBytes = $null
+[byte[]]$policySignatureFileBytes = $null
+[byte[]]$policySignature = $null
 [byte[]]$checkpointBytes = $null
 [byte[]]$keyBytes = $null
 [byte[]]$signatureFileBytes = $null
@@ -96,6 +125,18 @@ $rsa = $null
 $sha = $null
 
 try {
+    $policySelected = $PSBoundParameters.ContainsKey('PolicyPath') -or
+        $PSBoundParameters.ContainsKey('PolicySignaturePath') -or
+        $PSBoundParameters.ContainsKey('MinimumTrustedSequence') -or
+        $PSBoundParameters.ContainsKey('TrustedNowUtc')
+    if ($policySelected -and (
+        [string]::IsNullOrWhiteSpace($PolicyPath) -or
+        [string]::IsNullOrWhiteSpace($PolicySignaturePath) -or
+        [string]::IsNullOrWhiteSpace($TrustedNowUtc) -or
+        -not $PSBoundParameters.ContainsKey('MinimumTrustedSequence') -or
+        $MinimumTrustedSequence -lt 1)) {
+        throw 'POLICY_INPUT_INCOMPLETE'
+    }
     if ($ExpectedPublicKeySha256 -cnotmatch '^[0-9a-fA-F]{64}$') {
         throw 'EXPECTED_KEY_PIN_INVALID'
     }
@@ -104,7 +145,9 @@ try {
         -not (Test-SumiGuardNoReparse -Path $store)) {
         throw 'STORE_INVALID'
     }
-    foreach ($inputPath in @($CheckpointPath, $SignaturePath, $PublicKeyPath)) {
+    $inputs = @($CheckpointPath, $SignaturePath, $PublicKeyPath)
+    if ($policySelected) { $inputs += @($PolicyPath, $PolicySignaturePath) }
+    foreach ($inputPath in $inputs) {
         if (Test-SumiGuardWithinStore -Path $inputPath -Store $store) {
             throw 'INPUT_INSIDE_AUDIT_STORE'
         }
@@ -195,6 +238,83 @@ try {
         throw 'CHECKPOINT_SIGNATURE_INVALID'
     }
 
+
+    if ($policySelected) {
+        # Verify raw, detached policy bytes using the already pinned RSA key.
+        # The policy binds the exact signed checkpoint and supplies a sequence
+        # and validity window. Nothing about the claimed time is trusted until
+        # both the signature and the caller-provided reference are checked.
+        $policyBytes = Read-SumiGuardBoundedFile -Path $PolicyPath -MaximumBytes 4096
+        $policySignatureFileBytes = Read-SumiGuardBoundedFile -Path $PolicySignaturePath -MaximumBytes 8192
+        try {
+            $policySignatureText = $script:Utf8.GetString($policySignatureFileBytes).Trim()
+            if ($policySignatureText -cnotmatch '^[A-Za-z0-9+/]+={0,2}$') {
+                throw 'POLICY_SIGNATURE_FILE_INVALID'
+            }
+            $policySignature = [Convert]::FromBase64String($policySignatureText)
+            if ($policySignature.Length -ne $modulus.Length) {
+                throw 'POLICY_SIGNATURE_FILE_INVALID'
+            }
+        }
+        catch { throw 'POLICY_SIGNATURE_FILE_INVALID' }
+        $policySignatureVerified = $rsa.VerifyData(
+            $policyBytes, $policySignature,
+            [Security.Cryptography.HashAlgorithmName]::SHA256,
+            [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+        if (-not $policySignatureVerified) {
+            throw 'POLICY_SIGNATURE_INVALID'
+        }
+        try {
+            $policy = $script:Utf8.GetString($policyBytes) | ConvertFrom-Json -ErrorAction Stop
+            if ($null -eq $policy -or $policy -is [array]) {
+                throw 'POLICY_SCHEMA_INVALID'
+            }
+            $fields = @($policy.PSObject.Properties.Name)
+            $requiredFields = @(
+                'schema_version', 'record_type', 'store_kind',
+                'checkpoint_sha256', 'sequence', 'issued_at_utc',
+                'expires_at_utc')
+            if ($fields.Count -ne $requiredFields.Count) {
+                throw 'POLICY_SCHEMA_INVALID'
+            }
+            foreach ($required in $requiredFields) {
+                if ($fields -cnotcontains $required) {
+                    throw 'POLICY_SCHEMA_INVALID'
+                }
+            }
+            if ($policy.schema_version -isnot [int] -or
+                [int]$policy.schema_version -ne 1 -or
+                [string]$policy.record_type -cne 'SignedAuditCheckpointPolicy' -or
+                [string]$policy.store_kind -cne $StoreKind -or
+                $policy.checkpoint_sha256 -isnot [string] -or
+                [string]$policy.checkpoint_sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+                ($policy.sequence -isnot [int] -and $policy.sequence -isnot [long])) {
+                throw 'POLICY_SCHEMA_INVALID'
+            }
+            $sequence = [long]$policy.sequence
+            if ($sequence -lt 1) { throw 'POLICY_SCHEMA_INVALID' }
+        }
+        catch { throw 'POLICY_SCHEMA_INVALID' }
+
+        $checkpointDigest = ([BitConverter]::ToString($sha.ComputeHash($checkpointBytes))).Replace('-', '').ToLowerInvariant()
+        if ([string]$policy.checkpoint_sha256 -cne $checkpointDigest) {
+            throw 'POLICY_CHECKPOINT_MISMATCH'
+        }
+        if ($sequence -lt $MinimumTrustedSequence) {
+            throw 'POLICY_SEQUENCE_BELOW_FLOOR'
+        }
+        $policyFloorChecked = $true
+        $issued = ConvertTo-SumiGuardPolicyUtc -Value ([string]$policy.issued_at_utc)
+        $expires = ConvertTo-SumiGuardPolicyUtc -Value ([string]$policy.expires_at_utc)
+        $referenceNow = ConvertTo-SumiGuardPolicyUtc -Value $TrustedNowUtc
+        if ($expires -le $issued -or ($expires - $issued) -gt [TimeSpan]::FromDays(7)) {
+            throw 'POLICY_WINDOW_INVALID'
+        }
+        if ($referenceNow -lt $issued) { throw 'POLICY_NOT_YET_VALID' }
+        if ($referenceNow -ge $expires) { throw 'POLICY_EXPIRED' }
+        $policyTimeChecked = $true
+    }
+
     # The trusted baseline is passed unchanged to the existing read-only
     # verifier. No snapshot, key, signature or store file is written.
     $lines = @(& $script:PowerShell51 -NoLogo -NoProfile -NonInteractive -File $script:AuditVerifier -StoreKind $StoreKind -StorePath $StorePath -Action Compare -BaselinePath $CheckpointPath 2>&1)
@@ -228,7 +348,12 @@ catch {
         'EXPECTED_KEY_PIN_INVALID', 'STORE_INVALID', 'INPUT_INSIDE_AUDIT_STORE',
         'VERIFIER_UNAVAILABLE', 'INPUT_FILE_INVALID', 'PUBLIC_KEY_PIN_MISMATCH',
         'PUBLIC_KEY_INVALID', 'SIGNATURE_FILE_INVALID', 'CHECKPOINT_INVALID',
-        'CHECKPOINT_SIGNATURE_INVALID', 'AUDIT_COMPARISON_FAILED'
+        'CHECKPOINT_SIGNATURE_INVALID', 'AUDIT_COMPARISON_FAILED',
+        'POLICY_INPUT_INCOMPLETE', 'POLICY_SIGNATURE_FILE_INVALID',
+        'POLICY_SIGNATURE_INVALID', 'POLICY_SCHEMA_INVALID',
+        'POLICY_CHECKPOINT_MISMATCH', 'POLICY_SEQUENCE_BELOW_FLOOR',
+        'POLICY_TIME_INVALID', 'POLICY_WINDOW_INVALID',
+        'POLICY_NOT_YET_VALID', 'POLICY_EXPIRED'
     )
     $reasonCode = if ($known -ccontains [string]$_.Exception.Message) {
         [string]$_.Exception.Message
@@ -240,7 +365,9 @@ finally {
     if ($null -ne $rsa) { $rsa.Dispose() }
     if ($null -ne $sha) { $sha.Dispose() }
     if ($null -ne $baselineHeld) { $baselineHeld.Dispose() }
-    foreach ($buffer in @($checkpointBytes, $keyBytes, $signatureFileBytes, $signatureBytes, $modulus)) {
+    foreach ($buffer in @($checkpointBytes, $keyBytes, $signatureFileBytes,
+        $signatureBytes, $modulus, $policyBytes, $policySignatureFileBytes,
+        $policySignature)) {
         if ($null -ne $buffer -and $buffer.Length -gt 0) {
             [Array]::Clear($buffer, 0, $buffer.Length)
         }
@@ -253,6 +380,9 @@ finally {
     success = ($exitCode -eq 0)
     key_pin_verified = $keyPinVerified
     checkpoint_signature_verified = $signatureVerified
+    signed_policy_verified = $policySignatureVerified
+    policy_floor_checked = $policyFloorChecked
+    policy_time_checked = $policyTimeChecked
     store_matches_checkpoint = $storeMatched
     reason_code = $reasonCode
     readonly_verification = $true

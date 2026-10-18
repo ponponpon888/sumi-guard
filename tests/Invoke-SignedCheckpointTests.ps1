@@ -31,7 +31,12 @@ function Invoke-SignedCheck {
         [Parameter(Mandatory = $true)][string]$Checkpoint,
         [Parameter(Mandatory = $true)][string]$Signature,
         [Parameter(Mandatory = $true)][string]$PublicKey,
-        [Parameter(Mandatory = $true)][string]$Pin
+        [Parameter(Mandatory = $true)][string]$Pin,
+        [string]$PolicyPath = '',
+        [string]$PolicySignaturePath = '',
+        [long]$MinimumTrustedSequence = 42,
+        [string]$TrustedNowUtc = '2026-10-18T09:00:00Z',
+        [switch]$OmitTrustedSequence
     )
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $script:VerifierPath,
@@ -41,6 +46,18 @@ function Invoke-SignedCheck {
         '-SignaturePath', $Signature,
         '-PublicKeyPath', $PublicKey,
         '-ExpectedPublicKeySha256', $Pin)
+    if ($PolicyPath) {
+        $arguments += @('-PolicyPath', $PolicyPath)
+        if ($PolicySignaturePath) {
+            $arguments += @('-PolicySignaturePath', $PolicySignaturePath)
+        }
+        if (-not $OmitTrustedSequence) {
+            $arguments += @('-MinimumTrustedSequence', [string]$MinimumTrustedSequence)
+        }
+        if ($TrustedNowUtc) {
+            $arguments += @('-TrustedNowUtc', $TrustedNowUtc)
+        }
+    }
     $output = @(& $script:PowerShell51 @arguments)
     $code = $LASTEXITCODE
     $json = ($output -join [Environment]::NewLine).Trim()
@@ -122,6 +139,48 @@ try {
     $sigPath = Join-Path $work 'checkpoint.sig'
     $sigText = [Convert]::ToBase64String($privateSignature)
     [IO.File]::WriteAllText($sigPath, $sigText, $script:Utf8)
+    # Signed test policy with a fixed externally supplied clock, so CI results
+    # are independent of the date the disposable runner executes.
+    $policyPath = Join-Path $work 'signed-policy.json'
+    $policySigPath = Join-Path $work 'signed-policy.sig'
+    $policySnapshotBytes = [IO.File]::ReadAllBytes($checkpoint)
+    $checkpointHash = ([BitConverter]::ToString($sha.ComputeHash($policySnapshotBytes))).Replace('-', '').ToLowerInvariant()
+    [Array]::Clear($policySnapshotBytes, 0, $policySnapshotBytes.Length)
+    $policy = [ordered]@{
+        schema_version = 1
+        record_type = 'SignedAuditCheckpointPolicy'
+        store_kind = 'Execution'
+        checkpoint_sha256 = $checkpointHash
+        sequence = [long]42
+        issued_at_utc = '2026-10-18T08:00:00Z'
+        expires_at_utc = '2026-10-18T10:00:00Z'
+    }
+    $policyRaw = $policy | ConvertTo-Json -Compress
+    [IO.File]::WriteAllText($policyPath, $policyRaw, $script:Utf8)
+    [byte[]]$policyPlainBytes = $script:Utf8.GetBytes($policyRaw)
+    [byte[]]$policySignedBytes = $rsa.SignData(
+        $policyPlainBytes, [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    [Array]::Clear($policyPlainBytes, 0, $policyPlainBytes.Length)
+    $policySignatureText = [Convert]::ToBase64String($policySignedBytes)
+    [IO.File]::WriteAllText($policySigPath, $policySignatureText, $script:Utf8)
+    [Array]::Clear($policySignedBytes, 0, $policySignedBytes.Length)
+    # A correctly signed policy with an intentionally incorrect checkpoint hash.
+    # The cryptographic signature alone must not make a different baseline pass.
+    $wrongBindingPolicyPath = Join-Path $work 'policy-wrong-checkpoint.json'
+    $wrongBindingSigPath = Join-Path $work 'policy-wrong-checkpoint.sig'
+    $wrongHash = ('f' * 64)
+    if ($checkpointHash -ceq $wrongHash) { $wrongHash = ('0' * 64) }
+    $wrongPolicyRaw = $policyRaw.Replace($checkpointHash, $wrongHash)
+    [IO.File]::WriteAllText($wrongBindingPolicyPath, $wrongPolicyRaw, $script:Utf8)
+    [byte[]]$wrongPolicyBytes = $script:Utf8.GetBytes($wrongPolicyRaw)
+    [byte[]]$wrongPolicySignature = $rsa.SignData(
+        $wrongPolicyBytes, [Security.Cryptography.HashAlgorithmName]::SHA256,
+        [Security.Cryptography.RSASignaturePadding]::Pkcs1)
+    [IO.File]::WriteAllText($wrongBindingSigPath,
+        [Convert]::ToBase64String($wrongPolicySignature), $script:Utf8)
+    [Array]::Clear($wrongPolicyBytes, 0, $wrongPolicyBytes.Length)
+    [Array]::Clear($wrongPolicySignature, 0, $wrongPolicySignature.Length)
     # The private test key is never exported and never written to any file.
     $rsa.Dispose()
     $rsa = $null
@@ -137,6 +196,78 @@ try {
         (Get-FileHash -LiteralPath $auditPath -Algorithm SHA256).Hash -ceq $originalHash -and
         $valid.data.audit_store_modified -eq $false -and
         $valid.data.private_key_loaded -eq $false)
+
+
+    $script:Stage = 'SIGNED_POLICY_VALID'
+    $policyValid = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath
+    Add-Result -Name 'SIGNED_FRESH_POLICY_MATCH' -Pass (
+        $policyValid.code -eq 0 -and
+        $policyValid.data.status -ceq 'AUTHENTIC_CHECKPOINT_MATCH' -and
+        $policyValid.data.signed_policy_verified -eq $true -and
+        $policyValid.data.policy_floor_checked -eq $true -and
+        $policyValid.data.policy_time_checked -eq $true)
+
+    $script:Stage = 'POLICY_CHECKPOINT_BINDING'
+    $wrongBinding = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $wrongBindingPolicyPath -PolicySignaturePath $wrongBindingSigPath
+    Add-Result -Name 'VALIDLY_SIGNED_WRONG_CHECKPOINT_HASH_REJECTED' -Pass (
+        $wrongBinding.code -eq 2 -and
+        $wrongBinding.data.reason_code -ceq 'POLICY_CHECKPOINT_MISMATCH' -and
+        $wrongBinding.data.signed_policy_verified -eq $true)
+
+    $script:Stage = 'ROLLBACK_SEQUENCE'
+    $oldSequence = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath -MinimumTrustedSequence 43
+    Add-Result -Name 'OLD_SIGNED_SEQUENCE_REJECTED' -Pass (
+        $oldSequence.code -eq 2 -and
+        $oldSequence.data.reason_code -ceq 'POLICY_SEQUENCE_BELOW_FLOOR' -and
+        $oldSequence.data.signed_policy_verified -eq $true -and
+        $oldSequence.data.policy_floor_checked -eq $false)
+
+    $script:Stage = 'EXPIRY'
+    $expired = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath -TrustedNowUtc '2026-10-18T10:00:00Z'
+    Add-Result -Name 'EXPIRED_POLICY_REJECTED' -Pass (
+        $expired.code -eq 2 -and
+        $expired.data.reason_code -ceq 'POLICY_EXPIRED' -and
+        $expired.data.policy_time_checked -eq $false)
+
+    $script:Stage = 'FUTURE'
+    $future = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath -TrustedNowUtc '2026-10-18T07:59:59Z'
+    Add-Result -Name 'POLICY_NOT_YET_VALID_REJECTED' -Pass (
+        $future.code -eq 2 -and $future.data.reason_code -ceq 'POLICY_NOT_YET_VALID')
+
+    $script:Stage = 'UNTRUSTED_TIME_FORMAT'
+    $badTime = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath -TrustedNowUtc '2026-10-18T09:00:00+09:00'
+    Add-Result -Name 'NON_UTC_REFERENCE_TIME_REJECTED' -Pass (
+        $badTime.code -eq 2 -and $badTime.data.reason_code -ceq 'POLICY_TIME_INVALID')
+
+    $script:Stage = 'REQUIRED_OFFDEVICE_FLOOR'
+    $noFloor = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath -OmitTrustedSequence
+    Add-Result -Name 'MISSING_TRUSTED_FLOOR_REJECTED' -Pass (
+        $noFloor.code -eq 2 -and $noFloor.data.reason_code -ceq 'POLICY_INPUT_INCOMPLETE')
+
+    $script:Stage = 'MISSING_POLICY_SIGNATURE'
+    $noPolicySig = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath
+    Add-Result -Name 'MISSING_POLICY_SIGNATURE_REJECTED' -Pass (
+        $noPolicySig.code -eq 2 -and $noPolicySig.data.reason_code -ceq 'POLICY_INPUT_INCOMPLETE')
+
+    $script:Stage = 'POLICY_TAMPER'
+    [IO.File]::WriteAllText($policyPath, $policyRaw.Replace('"sequence":42', '"sequence":43'), $script:Utf8)
+    $policyTampered = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $policySigPath
+    Add-Result -Name 'ALTERED_POLICY_WITH_OLD_SIGNATURE_REJECTED' -Pass (
+        $policyTampered.code -eq 2 -and
+        $policyTampered.data.reason_code -ceq 'POLICY_SIGNATURE_INVALID')
+    [IO.File]::WriteAllText($policyPath, $policyRaw, $script:Utf8)
+
+    $script:Stage = 'POLICY_SIGNATURE_TAMPER'
+    $alteredPolicySigPath = Join-Path $work 'tampered-policy.sig'
+    [byte[]]$mutatedPolicySignature = [Convert]::FromBase64String($policySignatureText)
+    $mutatedPolicySignature[0] = $mutatedPolicySignature[0] -bxor 1
+    [IO.File]::WriteAllText($alteredPolicySigPath,
+        [Convert]::ToBase64String($mutatedPolicySignature), $script:Utf8)
+    [Array]::Clear($mutatedPolicySignature, 0, $mutatedPolicySignature.Length)
+    $policySigTampered = Invoke-SignedCheck -Store $store -Checkpoint $checkpoint -Signature $sigPath -PublicKey $keyPath -Pin $pin -PolicyPath $policyPath -PolicySignaturePath $alteredPolicySigPath
+    Add-Result -Name 'POLICY_SIGNATURE_TAMPERING_REJECTED' -Pass (
+        $policySigTampered.code -eq 2 -and
+        $policySigTampered.data.reason_code -ceq 'POLICY_SIGNATURE_INVALID')
 
     $script:Stage = 'AUDIT_CHANGE'
     [IO.File]::WriteAllText($auditPath, $originalRecord.Replace(('a' * 64), ('b' * 64)), $script:Utf8)
