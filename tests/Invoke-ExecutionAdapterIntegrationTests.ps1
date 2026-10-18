@@ -167,6 +167,32 @@ try {
         failure_notices = 0
     }
 
+    # Exercise the capacity check without creating a large file or executing a command.
+    $metadataFile = Join-Path $executionStore 'events.ndjson'
+    $bytesBeforeLimit = (Get-Item -LiteralPath $metadataFile).Length
+    try {
+        $adapterModule.SessionState.PSVariable.Set('MaximumMetadataFileBytes', [long]1)
+        $limitId = [Guid]::NewGuid().ToString('N')
+        $limitResult = Save-SumiGuardExecutionIntent `
+            -ExecutionStorePath $executionStore `
+            -LocalStorePath $bodyStore `
+            -Body 'synthetic capacity input' `
+            -ExecutionId $limitId `
+            -MetadataOnly
+    }
+    finally {
+        $adapterModule.SessionState.PSVariable.Set('MaximumMetadataFileBytes', [long](16MB))
+    }
+    Assert-Test (-not $limitResult.success -and
+        $limitResult.status -ceq 'EVENT_SAVE_FAILED_METADATA_ONLY') `
+        'Execution metadata cap did not fail closed.'
+    Assert-Test ((Get-Item -LiteralPath $metadataFile).Length -eq $bytesBeforeLimit) `
+        'Capacity failure modified existing execution metadata.'
+    Add-TestResult -Name 'metadata_capacity_is_bounded' -Evidence @{
+        write_rejected = $true
+        existing_records_unchanged = $true
+    }
+
     $normalExecutionId = [Guid]::NewGuid().ToString('N')
     $normal = Save-SumiGuardExecutionIntent `
         -ExecutionStorePath $executionStore `
