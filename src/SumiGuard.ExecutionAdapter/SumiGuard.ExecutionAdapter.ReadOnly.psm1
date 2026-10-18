@@ -882,11 +882,10 @@ function Invoke-SumiGuardExecutionRetentionCleanup {
     }
 }
 
+# This compatibility module contains legacy write functions internally, but
+# the read-only CLI must not expose them to callers. A future refactor can
+# move the shared reader into a dedicated module without mutating stores.
 Export-ModuleMember -Function @(
-    'Initialize-SumiGuardExecutionStore',
-    'Save-SumiGuardExecutionIntent',
     'Get-SumiGuardExecutionRecord',
-    'Get-SumiGuardCollectionFailureNotice',
-    'Read-SumiGuardExecutionBody',
-    'Invoke-SumiGuardExecutionRetentionCleanup'
+    'Get-SumiGuardCollectionFailureNotice'
 )
