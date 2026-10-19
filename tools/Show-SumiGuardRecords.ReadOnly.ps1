@@ -18,7 +18,7 @@ $ErrorActionPreference = 'Stop'
 $script:Utf8Strict = New-Object System.Text.UTF8Encoding($false, $true)
 $script:Jst = [TimeZoneInfo]::FindSystemTimeZoneById('Tokyo Standard Time')
 $script:AdapterModulePath = Join-Path (Split-Path -Parent $PSScriptRoot) `
-    'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.ReadOnly.psm1'
+    'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.ReadOnly.psd1'
 
 function Get-Value {
     param($Object, [Parameter(Mandatory = $true)][string]$Name, $Default = $null)

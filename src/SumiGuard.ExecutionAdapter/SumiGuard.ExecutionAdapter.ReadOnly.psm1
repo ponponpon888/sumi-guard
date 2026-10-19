@@ -883,10 +883,6 @@ function Invoke-SumiGuardExecutionRetentionCleanup {
 }
 
 Export-ModuleMember -Function @(
-    'Initialize-SumiGuardExecutionStore',
-    'Save-SumiGuardExecutionIntent',
     'Get-SumiGuardExecutionRecord',
-    'Get-SumiGuardCollectionFailureNotice',
-    'Read-SumiGuardExecutionBody',
-    'Invoke-SumiGuardExecutionRetentionCleanup'
+    'Get-SumiGuardCollectionFailureNotice'
 )

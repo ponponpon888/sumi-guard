@@ -8,6 +8,7 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $cliPath = Join-Path $projectRoot 'tools\Show-SumiGuardRecords.ps1'
 $localManifest = Join-Path $projectRoot 'src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1'
 $adapterManifest = Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1'
+$readOnlyManifest = Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.ReadOnly.psd1'
 $tempBase = [IO.Path]::GetFullPath([IO.Path]::GetTempPath())
 $testRoot = Join-Path $tempBase ('sumi-guard-readonly-cli-tests-' + [Guid]::NewGuid().ToString('N'))
 $results = New-Object System.Collections.Generic.List[object]
@@ -107,8 +108,22 @@ try {
     [void](New-Item -ItemType Directory -Path $resolvedTestRoot -ErrorAction Stop)
     Import-Module $localManifest -Force -ErrorAction Stop
     Import-Module $adapterManifest -Force -ErrorAction Stop
+    Import-Module $readOnlyManifest -Force -ErrorAction Stop
     $localModule = Get-Module SumiGuard.LocalStore -ErrorAction Stop
     $adapterModule = Get-Module SumiGuard.ExecutionAdapter -ErrorAction Stop
+    $readOnlyModule = Get-Module SumiGuard.ExecutionAdapter.ReadOnly -ErrorAction Stop
+    $expectedReadOnlyExports = @(
+        'Get-SumiGuardCollectionFailureNotice',
+        'Get-SumiGuardExecutionRecord'
+    ) | Sort-Object
+    $actualReadOnlyExports = @($readOnlyModule.ExportedFunctions.Keys) | Sort-Object
+    Assert-Test (($actualReadOnlyExports -join '|') -ceq ($expectedReadOnlyExports -join '|')) `
+        ('ReadOnly API export mismatch: expected={0}, actual={1}.' -f `
+            ($expectedReadOnlyExports -join ','), ($actualReadOnlyExports -join ','))
+    Add-Result -Name 'readonly_api_surface' -Evidence @{
+        exported_functions = $actualReadOnlyExports -join ','
+        write_and_decrypt_functions_exported = $false
+    }
 
     $bodyStore = Join-Path $resolvedTestRoot 'body-store'
     $executionStore = Join-Path $resolvedTestRoot 'execution-store'
