@@ -4,9 +4,9 @@
     Every input is fixed string data passed to the hook as hook-event JSON. No
     input is executed: the hook is started as a child Windows PowerShell 5.1
     process with -File, and the command strings inside the events never reach a
-    shell, the call operator, Invoke-Expression or Start-Process. Most cases use
-    -TestIntentSaveOutcome as a deterministic adapter seam. The real-adapter
-    metadata-only case uses only a disposable store and child PowerShell process.
+    shell, the call operator, Invoke-Expression or Start-Process. The body store
+    is not touched; -TestIntentSaveOutcome stands in for the adapter because its
+    protection is DPAPI CurrentUser.
 #>
 [CmdletBinding()]
 param()
@@ -75,20 +75,6 @@ function Get-DetailField {
     if (@($detail.PSObject.Properties.Name) -notcontains $Name) { return $null }
 
     return $detail.$Name
-}
-
-function Get-ObjectField {
-    param(
-        [Parameter(Mandatory = $true)][AllowNull()]$Object,
-        [Parameter(Mandatory = $true)][string]$Name
-    )
-
-    if ($null -eq $Object) { return $null }
-    $first = @($Object)[0]
-    if ($null -eq $first -or @($first.PSObject.Properties.Name) -notcontains $Name) {
-        return $null
-    }
-    return $first.$Name
 }
 
 # Reads one field of the assessment record inside a hook result, tolerating an
@@ -177,15 +163,6 @@ function Get-HookEventJson {
     } | ConvertTo-Json -Compress -Depth 5)
 }
 
-function ConvertTo-HookProcessArgument {
-    param([Parameter(Mandatory = $true)][string]$Value)
-
-    # All values passed here are fixed paths or fixed switches. Quoting each
-    # value keeps the ProcessStartInfo invocation independent of the caller's
-    # current working directory and avoids putting event JSON on argv.
-    return '"' + $Value + '"'
-}
-
 function Invoke-Hook {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson,
@@ -193,16 +170,13 @@ function Invoke-Hook {
         [switch]$TrustedRoute,
         [string]$IntentOutcome = 'TEST_SUCCESS',
         [switch]$ForceEvaluationFailure,
-        [switch]$ForceAssessmentSaveFailure,
-        [switch]$SeparateNativeStreams
+        [switch]$ForceAssessmentSaveFailure
     )
 
     $caseRoot = Join-Path $workRoot $CaseName
     $assessmentStorePath = Join-Path $caseRoot 'assessment-store'
     $noticePath = Join-Path $caseRoot 'notices\monitor-hook-notices.ndjson'
     $resultPath = Join-Path $caseRoot 'result.json'
-    $executionStorePath = Join-Path $caseRoot 'execution-store'
-    $localStorePath = Join-Path $caseRoot 'body-store'
     $null = New-Item -ItemType Directory -Path $caseRoot -Force
 
     $script:stage = $CaseName + '/store-setup'
@@ -210,19 +184,6 @@ function Invoke-Hook {
     $created = New-SumiGuardAssessmentStore -StorePath $assessmentStorePath
     if (-not $created.success) {
         throw [System.InvalidOperationException]::new('assessment store setup failed')
-    }
-
-    if ($IntentOutcome -ceq 'ADAPTER') {
-        # The operational adapter contract expects both protected stores to
-        # exist before the hook calls it. Prepare only this case's disposable
-        # stores; the hook itself still performs the real adapter call.
-        Import-Module (Join-Path $projectRoot 'src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1') -Force
-        Import-Module (Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1') -Force
-        $bodyStoreInit = Initialize-SumiGuardLocalStore -Path $localStorePath
-        $executionStoreInit = Initialize-SumiGuardExecutionStore -Path $executionStorePath
-        if (-not $bodyStoreInit.success -or -not $executionStoreInit.success) {
-            throw [System.InvalidOperationException]::new('adapter test stores setup failed')
-        }
     }
 
     # The event goes in over standard input, which is how a hook host delivers
@@ -233,8 +194,8 @@ function Invoke-Hook {
     $arguments = @(
         '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', $hookPath,
-        '-ExecutionStorePath', $executionStorePath,
-        '-LocalStorePath', $localStorePath,
+        '-ExecutionStorePath', (Join-Path $caseRoot 'execution-store'),
+        '-LocalStorePath', (Join-Path $caseRoot 'body-store'),
         '-AssessmentStorePath', $assessmentStorePath,
         '-NoticePath', $noticePath,
         '-ResultPath', $resultPath,
@@ -245,49 +206,10 @@ function Invoke-Hook {
 
     $previousPreference = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
-    $stdoutText = ''
-    $stderrText = ''
-    $childExited = $false
     try {
         $script:stage = $CaseName + '/child-run'
-        if ($SeparateNativeStreams) {
-            $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-            $startInfo.FileName = $powerShell51
-            $startInfo.Arguments = (($arguments | ForEach-Object {
-                ConvertTo-HookProcessArgument -Value ([string]$_)
-            }) -join ' ')
-            $startInfo.UseShellExecute = $false
-            $startInfo.CreateNoWindow = $true
-            $startInfo.RedirectStandardInput = $true
-            $startInfo.RedirectStandardOutput = $true
-            $startInfo.RedirectStandardError = $true
-
-            $child = New-Object System.Diagnostics.Process
-            $child.StartInfo = $startInfo
-            try {
-                if (-not $child.Start()) {
-                    throw [System.InvalidOperationException]::new('child process did not start')
-                }
-                $child.StandardInput.Write($EventJson)
-                $child.StandardInput.Close()
-                $stdoutText = $child.StandardOutput.ReadToEnd()
-                $stderrText = $child.StandardError.ReadToEnd()
-                $child.WaitForExit()
-                $exitCode = $child.ExitCode
-                $childExited = $child.HasExited
-            }
-            finally {
-                if ($null -ne $child) { $child.Dispose() }
-            }
-        }
-        else {
-            $stdout = $EventJson | & $powerShell51 @arguments 2>&1
-            $exitCode = $LASTEXITCODE
-            $stdoutText = ($stdout | Out-String)
-            # The legacy seam intentionally merges streams; the real-adapter
-            # case above captures stderr separately.
-            $childExited = $true
-        }
+        $stdout = $EventJson | & $powerShell51 @arguments 2>&1
+        $exitCode = $LASTEXITCODE
     }
     finally {
         $ErrorActionPreference = $previousPreference
@@ -315,15 +237,11 @@ function Invoke-Hook {
 
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
-        stdout_text = $stdoutText
-        stderr_text = $stderrText
-        child_process_exited = $childExited
+        stdout_text = ($stdout | Out-String)
         detail = $detail
         store_text = $storeText
         notice_text = $noticeText
         assessment_store_path = $assessmentStorePath
-        execution_store_path = $executionStorePath
-        local_store_path = $localStorePath
     }
 }
 
@@ -403,119 +321,6 @@ try {
     }
     catch {
         Add-Result 'CASE_EXCEPTION_DETECTED' $false -Observed @{
-            exception_type = $_.Exception.GetType().FullName
-            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
-            stage = [string]$script:stage
-        }
-    }
-
-    try {
-        # This is the one end-to-end case: the child hook uses the real adapter
-        # path and receives no -CaptureCommandBody switch. The command is fixed,
-        # harmless synthetic input and is never sent to a command interpreter.
-        $script:stage = 'assert/real-adapter-metadata-only'
-        $realBody = "Write-Output '$canary'"
-        $realRun = Invoke-Hook -CaseName 'real-adapter-metadata-only' -TrustedRoute `
-            -IntentOutcome 'ADAPTER' -SeparateNativeStreams `
-            -EventJson (Get-HookEventJson -Command $realBody)
-
-        Import-Module (Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1') -Force
-        $realExecutionStore = [string](Get-RunField -Run $realRun -Name 'execution_store_path')
-        $realLocalStore = [string](Get-RunField -Run $realRun -Name 'local_store_path')
-        $realDetail = Get-DetailField -Run $realRun -Name 'detail'
-        $realExecutionId = [string](Get-DetailField -Run $realRun -Name 'execution_id')
-        $realRecords = Get-SumiGuardExecutionRecord `
-            -ExecutionStorePath $realExecutionStore `
-            -LocalStorePath $realLocalStore `
-            -ExecutionId $realExecutionId
-        $realRecord = $null
-        if ($realRecords.success -and $realRecords.record_count -eq 1) {
-            $realRecord = @($realRecords.records)[0]
-        }
-        $realReadBody = Read-SumiGuardExecutionBody `
-            -ExecutionStorePath $realExecutionStore `
-            -LocalStorePath $realLocalStore `
-            -ExecutionId $realExecutionId
-        $realNotices = Get-SumiGuardCollectionFailureNotice `
-            -ExecutionStorePath $realExecutionStore `
-            -ExecutionId $realExecutionId
-        $realRecordCount = [int](Get-ObjectField -Object $realRecords -Name 'record_count')
-        $realRecordsSuccess = [bool](Get-ObjectField -Object $realRecords -Name 'success')
-        $realNoticeCount = [int](Get-ObjectField -Object $realNotices -Name 'notice_count')
-
-        $sha = [Security.Cryptography.SHA256]::Create()
-        try {
-            $expectedHash = ([BitConverter]::ToString($sha.ComputeHash(
-                [Text.Encoding]::UTF8.GetBytes($realBody)))).Replace('-', '').ToLowerInvariant()
-        }
-        finally {
-            $sha.Dispose()
-        }
-
-        $bodyFiles = @()
-        if (Test-Path -LiteralPath $realLocalStore) {
-            $bodyFiles = @(Get-ChildItem -LiteralPath $realLocalStore -Recurse -File -Filter '*.sgb' -ErrorAction Stop)
-        }
-
-        $allFiles = @(Get-ChildItem -LiteralPath (Join-Path $workRoot 'real-adapter-metadata-only') -Recurse -File -ErrorAction Stop)
-        $plaintextFoundInFiles = $false
-        foreach ($file in $allFiles) {
-            $fileText = [Text.Encoding]::UTF8.GetString([IO.File]::ReadAllBytes($file.FullName))
-            if ($fileText.Contains($canary)) {
-                $plaintextFoundInFiles = $true
-                break
-            }
-        }
-
-        $realAssessmentText = [string](Get-RunField -Run $realRun -Name 'store_text')
-        $realStdout = [string](Get-RunField -Run $realRun -Name 'stdout_text')
-        $realStderr = [string](Get-RunField -Run $realRun -Name 'stderr_text')
-        $intentNotExecutionEvidence = (
-            $null -ne $realRecord -and
-            [string]$realRecord.record_type -ceq 'ExecutionIntentRecorded' -and
-            [string](Get-DetailField -Run $realRun -Name 'evaluation_origin') -ceq 'CODEX_PRETOOLUSE_HOOK' -and
-            -not $realAssessmentText.Contains('MANAGED_EXECUTION'))
-        $realPass = (
-            (Test-MonitorOnlyResponse -Run $realRun) -and
-            [bool](Get-RunField -Run $realRun -Name 'child_process_exited') -and
-            [string](Get-DetailField -Run $realRun -Name 'intent_storage_status') -ceq 'EVENT_SAVED_METADATA_ONLY' -and
-            [string](Get-DetailField -Run $realRun -Name 'assessment_storage_status') -ceq 'SAVED' -and
-            $realRecordsSuccess -and $realRecordCount -eq 1 -and
-            $null -ne $realRecord -and
-            [string]$realRecord.content_status -ceq 'HASH_ONLY' -and
-            [string]$realRecord.body_reference_status -ceq 'NOT_STORED' -and
-            [string]$realRecord.collection_status -ceq 'RECORDS_FOUND' -and
-            [string]$realRecord.body_sha256 -ceq $expectedHash -and
-            [string]$realRecord.execution_id -ceq $realExecutionId -and
-            $bodyFiles.Count -eq 0 -and
-            -not $realStdout.Contains($canary) -and
-            -not $realStderr.Contains($canary) -and
-            -not $plaintextFoundInFiles -and
-            -not $realReadBody.success -and
-            [string]$realReadBody.status -ceq 'BODY_NOT_CAPTURED' -and
-            [bool](Get-ObjectField -Object $realNotices -Name 'success') -and $realNoticeCount -eq 0 -and
-            $intentNotExecutionEvidence)
-        $script:stage = 'add/REAL_ADAPTER_DEFAULTS_TO_METADATA_ONLY'
-        Add-Result 'REAL_ADAPTER_DEFAULTS_TO_METADATA_ONLY' $realPass -Observed @{
-            intent_status = [string](Get-DetailField -Run $realRun -Name 'intent_storage_status')
-            record_count = $realRecordCount
-            content_status = if ($null -eq $realRecord) { '' } else { [string]$realRecord.content_status }
-            body_reference_status = if ($null -eq $realRecord) { '' } else { [string]$realRecord.body_reference_status }
-            body_files = $bodyFiles.Count
-            body_hash_matches = ($null -ne $realRecord -and [string]$realRecord.body_sha256 -ceq $expectedHash)
-            body_read_status = [string]$realReadBody.status
-            failure_notices = $realNoticeCount
-            child_process_exited = [bool](Get-RunField -Run $realRun -Name 'child_process_exited')
-            monitor_action = [string](Get-DetailField -Run $realRun -Name 'monitor_action')
-            automatic_deny = [bool](Get-DetailField -Run $realRun -Name 'automatic_deny')
-            plaintext_found_in_output_or_files = ($realStdout.Contains($canary) -or
-                $realStderr.Contains($canary) -or $plaintextFoundInFiles)
-            evaluation_origin = [string](Get-DetailField -Run $realRun -Name 'evaluation_origin')
-            record_type = if ($null -eq $realRecord) { '' } else { [string]$realRecord.record_type }
-        }
-    }
-    catch {
-        Add-Result 'CASE_EXCEPTION_REAL_ADAPTER_METADATA_ONLY' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage

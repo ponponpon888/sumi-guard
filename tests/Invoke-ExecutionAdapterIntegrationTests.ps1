@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $localStoreManifest = Join-Path $projectRoot 'src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1'
 $adapterManifest = Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1'
+$assessmentStoreManifest = Join-Path $projectRoot 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1'
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $testRoot = Join-Path $tempRoot ('sumi-guard-adapter-tests-' + [Guid]::NewGuid().ToString('N'))
 $testRootFullPath = [System.IO.Path]::GetFullPath($testRoot)
@@ -36,6 +37,82 @@ function Add-TestResult {
         passed = $true
         evidence = [pscustomobject]$Evidence
     })
+}
+
+function ConvertTo-HookProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    # Paths and switches are fixed test arguments. The event JSON is sent over
+    # stdin so command text never enters the child process command line.
+    return '"' + $Value + '"'
+}
+
+function Get-RealHookEventJson {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Command)
+
+    return ([ordered]@{
+        hook_event_name = 'PreToolUse'
+        tool_name = 'Bash'
+        session_id = 'synthetic-real-adapter-session'
+        turn_id = 'synthetic-real-adapter-turn'
+        tool_use_id = 'synthetic-real-adapter-tool'
+        tool_input = [ordered]@{ command = $Command }
+    } | ConvertTo-Json -Compress -Depth 5)
+}
+
+function Invoke-RealMonitorHook {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookPath,
+        [Parameter(Mandatory = $true)][string]$ExecutionStorePath,
+        [Parameter(Mandatory = $true)][string]$LocalStorePath,
+        [Parameter(Mandatory = $true)][string]$AssessmentStorePath,
+        [Parameter(Mandatory = $true)][string]$NoticePath,
+        [Parameter(Mandatory = $true)][string]$ResultPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson
+    )
+
+    $powerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $HookPath,
+        '-ExecutionStorePath', $ExecutionStorePath,
+        '-LocalStorePath', $LocalStorePath,
+        '-AssessmentStorePath', $AssessmentStorePath,
+        '-NoticePath', $NoticePath,
+        '-ResultPath', $ResultPath,
+        '-TrustedWindowsPowerShellRoute')
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powerShell51
+    $startInfo.Arguments = (($arguments | ForEach-Object {
+        ConvertTo-HookProcessArgument -Value ([string]$_)
+    }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('real monitor hook did not start')
+        }
+        $process.StandardInput.Write($EventJson)
+        $process.StandardInput.Close()
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject][ordered]@{
+            exit_code = $process.ExitCode
+            child_process_exited = $process.HasExited
+            stdout_text = $stdout
+            stderr_text = $stderr
+        }
+    }
+    finally {
+        $process.Dispose()
+    }
 }
 
 function Test-ByteSequenceInFile {
@@ -164,6 +241,115 @@ try {
         body_files_created = 0
         read_status = $noBody.status
         failure_notices = 0
+    }
+
+    # End-to-end MONITOR -> real ExecutionAdapter verification. This test lives
+    # in the DPAPI-dependent integration suite because it imports LocalStore;
+    # the hook still runs in a child Windows PowerShell 5.1 process and receives
+    # no -CaptureCommandBody switch.
+    $realCaseRoot = Join-Path $testRootFullPath 'real-hook-adapter'
+    $realBodyStore = Join-Path $realCaseRoot 'body-store'
+    $realExecutionStore = Join-Path $realCaseRoot 'execution-store'
+    $realAssessmentStore = Join-Path $realCaseRoot 'assessment-store'
+    $realNoticePath = Join-Path $realCaseRoot 'notices\monitor-hook-notices.ndjson'
+    $realResultPath = Join-Path $realCaseRoot 'result.json'
+    $realHookPath = Join-Path $projectRoot 'hooks\Invoke-SumiGuardMonitorHook.ps1'
+    $null = New-Item -ItemType Directory -Path $realCaseRoot -Force
+    $null = Import-Module $assessmentStoreManifest -Force -ErrorAction Stop
+    $realAssessmentInit = New-SumiGuardAssessmentStore -StorePath $realAssessmentStore
+    Assert-Test $realAssessmentInit.success 'Real-hook assessment-store initialization failed.'
+    $realBodyInit = Initialize-SumiGuardLocalStore -Path $realBodyStore
+    $realExecutionInit = Initialize-SumiGuardExecutionStore -Path $realExecutionStore
+    Assert-Test $realBodyInit.success 'Real-hook LocalStore initialization failed.'
+    Assert-Test $realExecutionInit.success 'Real-hook execution-store initialization failed.'
+
+    $realHookBody = "Write-Output '$syntheticSecret'"
+    $realHookRun = Invoke-RealMonitorHook `
+        -HookPath $realHookPath `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -AssessmentStorePath $realAssessmentStore `
+        -NoticePath $realNoticePath `
+        -ResultPath $realResultPath `
+        -EventJson (Get-RealHookEventJson -Command $realHookBody)
+    Assert-Test ($realHookRun.exit_code -eq 0 -and $realHookRun.child_process_exited) `
+        'Real MONITOR hook did not exit cleanly.'
+    Assert-Test (-not $realHookRun.stdout_text.Contains($syntheticSecret)) `
+        'Synthetic body leaked to MONITOR stdout.'
+    Assert-Test (-not $realHookRun.stderr_text.Contains($syntheticSecret)) `
+        'Synthetic body leaked to MONITOR stderr.'
+
+    $realDetail = Get-Content -LiteralPath $realResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $realExecutionId = [string]$realDetail.execution_id
+    Assert-Test (-not [string]::IsNullOrWhiteSpace($realExecutionId)) `
+        'Real MONITOR hook did not produce an execution identity.'
+    $realRecords = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -ExecutionId $realExecutionId
+    Assert-Test ($realRecords.success -and $realRecords.record_count -eq 1) `
+        'Real adapter did not generate exactly one execution record.'
+    $realRecord = $realRecords.records[0]
+    $realAssessmentRecords = Get-SumiGuardAssessmentRecord -StorePath $realAssessmentStore
+    Assert-Test ($realAssessmentRecords.success -and $realAssessmentRecords.record_count -eq 1) `
+        'Real MONITOR hook did not generate an assessment record.'
+    $realAssessmentRecord = $realAssessmentRecords.records[0]
+
+    $realHash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $realExpectedHash = ([BitConverter]::ToString($realHash.ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes($realHookBody)))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $realHash.Dispose()
+    }
+    $realBodyFiles = @(Get-ChildItem -LiteralPath $realBodyStore -Recurse -File -Filter '*.sgb')
+    $realReadBody = Read-SumiGuardExecutionBody `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -ExecutionId $realExecutionId
+    $realNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $realExecutionStore `
+        -ExecutionId $realExecutionId
+    $realResponse = $realHookRun.stdout_text | ConvertFrom-Json
+    $realResponseNames = @($realResponse.PSObject.Properties.Name)
+    Assert-Test ($realResponseNames.Count -eq 1 -and $realResponseNames[0] -ceq 'systemMessage') `
+        'Real MONITOR response was not structured output only.'
+    Assert-Test ([string]$realDetail.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') `
+        'Real MONITOR origin was not preserved.'
+    Assert-Test ([string]$realAssessmentRecord.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK' -and
+        [string]$realAssessmentRecord.record_type -ne 'MANAGED_EXECUTION') `
+        'Pre-execution hook was represented as managed execution.'
+    Assert-Test (-not $realDetail.automatic_deny -and $realDetail.monitor_action -ceq 'WARN_ONLY') `
+        'Real MONITOR path changed deny behavior.'
+    Assert-Test (Test-PlaintextAbsentFromTree -Path $realCaseRoot -Text $syntheticSecret) `
+        'Synthetic body leaked to a real-hook generated file.'
+    Assert-Test ($realBodyFiles.Count -eq 0) 'Real MONITOR path wrote an encrypted body file.'
+    Assert-Test ($realRecord.content_status -ceq 'HASH_ONLY' -and
+        $realRecord.collection_status -ceq 'RECORDS_FOUND' -and
+        $realRecord.body_reference_status -ceq 'NOT_STORED' -and
+        $realRecord.body_sha256 -ceq $realExpectedHash) `
+        'Real adapter metadata did not match the expected hash-only record.'
+    Assert-Test (-not $realReadBody.success -and $realReadBody.status -ceq 'BODY_NOT_CAPTURED') `
+        'Real MONITOR path unexpectedly allowed body read.'
+    Assert-Test ($realNotices.success -and $realNotices.notice_count -eq 0) `
+        'Real MetadataOnly path emitted a false failure notice.'
+    $safeObjects.Add($realRecords)
+    $safeObjects.Add($realAssessmentRecords)
+    $safeObjects.Add($realReadBody)
+    Add-TestResult -Name 'real_monitor_to_adapter_metadata_only' -Evidence @{
+        execution_record_count = $realRecords.record_count
+        assessment_record_count = $realAssessmentRecords.record_count
+        adapter_status = [string]$realDetail.intent_storage_status
+        content_status = [string]$realRecord.content_status
+        body_reference_status = [string]$realRecord.body_reference_status
+        body_hash_matches = ($realRecord.body_sha256 -ceq $realExpectedHash)
+        body_files_created = $realBodyFiles.Count
+        body_read_status = [string]$realReadBody.status
+        failure_notices = $realNotices.notice_count
+        evaluation_origin = [string]$realAssessmentRecord.evaluation_origin
+        child_process_exited = [bool]$realHookRun.child_process_exited
+        automatic_deny = [bool]$realDetail.automatic_deny
     }
 
     $normalExecutionId = [Guid]::NewGuid().ToString('N')
