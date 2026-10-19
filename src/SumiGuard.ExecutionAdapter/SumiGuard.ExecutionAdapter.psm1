@@ -537,7 +537,7 @@ function Save-SumiGuardExecutionIntent {
             body_storage_status = $bodyStorageStatus
             event_storage_status = 'FAILED'
             failure_notice_status = $failureNoticeStatus
-            collection_status = if ($MetadataOnly) { 'RECORDS_FOUND' } else { 'COLLECTION_FAILED' }
+            collection_status = 'COLLECTION_FAILED'
             content_status = $contentStatus
             body_ref = $bodyRef
             monitor_action = 'CONTINUE'

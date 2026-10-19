@@ -60,6 +60,87 @@ function Get-RealHookEventJson {
     } | ConvertTo-Json -Compress -Depth 5)
 }
 
+function Invoke-SumiGuardTestChildProcess {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$InputText,
+        [ValidateRange(100, 120000)][int]$TimeoutMilliseconds = 30000
+    )
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $StartInfo
+    $started = $false
+    $stdoutTask = $null
+    $stderrTask = $null
+    $timedOut = $false
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('test child process did not start')
+        }
+        $started = $true
+
+        # Start both async reads before waiting so a full pipe cannot block the
+        # child. ReadToEndAsync is available in Windows PowerShell 5.1's .NET.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write($InputText)
+        $process.StandardInput.Close()
+
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $timedOut = $true
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
+            }
+            catch {
+                # The finally block retries the same process-specific cleanup.
+            }
+            $process.WaitForExit()
+        }
+        else {
+            $process.WaitForExit()
+        }
+
+        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
+        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
+        return [pscustomobject][ordered]@{
+            exit_code = $process.ExitCode
+            child_process_exited = $process.HasExited
+            timed_out = $timedOut
+            stdout_text = $stdout
+            stderr_text = $stderr
+        }
+    }
+    finally {
+        if ($started) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
+            }
+            catch {
+                # Cleanup is scoped to the Process instance started above.
+            }
+            try {
+                $process.WaitForExit()
+            }
+            catch {
+            }
+            foreach ($readTask in @($stdoutTask, $stderrTask)) {
+                if ($null -ne $readTask) {
+                    try {
+                        $readTask.Wait()
+                    }
+                    catch {
+                    }
+                }
+            }
+        }
+        $process.Dispose()
+    }
+}
+
 function Invoke-RealMonitorHook {
     param(
         [Parameter(Mandatory = $true)][string]$HookPath,
@@ -68,7 +149,8 @@ function Invoke-RealMonitorHook {
         [Parameter(Mandatory = $true)][string]$AssessmentStorePath,
         [Parameter(Mandatory = $true)][string]$NoticePath,
         [Parameter(Mandatory = $true)][string]$ResultPath,
-        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson,
+        [ValidateRange(100, 120000)][int]$TimeoutMilliseconds = 30000
     )
 
     $powerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
@@ -92,27 +174,10 @@ function Invoke-RealMonitorHook {
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
 
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    try {
-        if (-not $process.Start()) {
-            throw [System.InvalidOperationException]::new('real monitor hook did not start')
-        }
-        $process.StandardInput.Write($EventJson)
-        $process.StandardInput.Close()
-        $stdout = $process.StandardOutput.ReadToEnd()
-        $stderr = $process.StandardError.ReadToEnd()
-        $process.WaitForExit()
-        return [pscustomobject][ordered]@{
-            exit_code = $process.ExitCode
-            child_process_exited = $process.HasExited
-            stdout_text = $stdout
-            stderr_text = $stderr
-        }
-    }
-    finally {
-        $process.Dispose()
-    }
+    return Invoke-SumiGuardTestChildProcess `
+        -StartInfo $startInfo `
+        -InputText $EventJson `
+        -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
 function Test-ByteSequenceInFile {
@@ -243,6 +308,58 @@ try {
         failure_notices = 0
     }
 
+    $metadataEventFailureExecutionId = [Guid]::NewGuid().ToString('N')
+    $metadataEventFailureBodyCountBefore = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    try {
+        & $adapterModule { $script:SumiGuardTestForceEventWriteFailure = $true }
+        $metadataEventFailure = Save-SumiGuardExecutionIntent `
+            -ExecutionStorePath $executionStore `
+            -LocalStorePath $bodyStore `
+            -Body $syntheticSecret `
+            -ExecutionId $metadataEventFailureExecutionId `
+            -MetadataOnly
+    }
+    finally {
+        & $adapterModule { $script:SumiGuardTestForceEventWriteFailure = $false }
+    }
+    $metadataEventFailureBodyCountAfter = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    Assert-Test (-not $metadataEventFailure.success) `
+        'Metadata-only event failure unexpectedly succeeded.'
+    Assert-Test ($metadataEventFailure.status -ceq 'EVENT_SAVE_FAILED_METADATA_ONLY') `
+        'Metadata-only event failure status is incorrect.'
+    Assert-Test ($metadataEventFailure.event_storage_status -ceq 'FAILED' -and
+        $metadataEventFailure.body_storage_status -ceq 'OMITTED_BY_POLICY' -and
+        $metadataEventFailure.collection_status -ceq 'COLLECTION_FAILED') `
+        'Metadata-only event failure storage state is incorrect.'
+    Assert-Test (-not $metadataEventFailure.automatic_deny -and
+        $metadataEventFailure.monitor_action -ceq 'CONTINUE') `
+        'Metadata-only event failure changed MONITOR behavior.'
+    Assert-Test ($metadataEventFailureBodyCountAfter -eq $metadataEventFailureBodyCountBefore) `
+        'Metadata-only event failure created a body file.'
+    $metadataEventFailureRecords = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataEventFailureExecutionId
+    Assert-Test ($metadataEventFailureRecords.record_count -eq 0) `
+        'Metadata-only event failure produced a primary event.'
+    $metadataEventFailureNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $executionStore `
+        -ExecutionId $metadataEventFailureExecutionId
+    Assert-Test ($metadataEventFailureNotices.notice_count -eq 1) `
+        'Metadata-only event failure notice count is incorrect.'
+    $safeObjects.Add($metadataEventFailure)
+    $safeObjects.Add($metadataEventFailureRecords)
+    $safeObjects.Add($metadataEventFailureNotices)
+    Add-TestResult -Name 'metadata_only_event_failure_is_collection_failure' -Evidence @{
+        adapter_status = $metadataEventFailure.status
+        event_storage_status = $metadataEventFailure.event_storage_status
+        body_storage_status = $metadataEventFailure.body_storage_status
+        collection_status = $metadataEventFailure.collection_status
+        body_files_created = $metadataEventFailureBodyCountAfter - $metadataEventFailureBodyCountBefore
+        primary_event_count = $metadataEventFailureRecords.record_count
+        automatic_deny = $metadataEventFailure.automatic_deny
+    }
+
     # End-to-end MONITOR -> real ExecutionAdapter verification. This test lives
     # in the DPAPI-dependent integration suite because it imports LocalStore;
     # the hook still runs in a child Windows PowerShell 5.1 process and receives
@@ -350,6 +467,37 @@ try {
         evaluation_origin = [string]$realAssessmentRecord.evaluation_origin
         child_process_exited = [bool]$realHookRun.child_process_exited
         automatic_deny = [bool]$realDetail.automatic_deny
+    }
+
+    # Isolated process-management check. The child only sleeps, and the helper
+    # must time it out and reap that exact Process instance without name-based
+    # termination of unrelated processes.
+    $timeoutStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $timeoutStartInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $timeoutArguments = @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30')
+    $timeoutStartInfo.Arguments = (($timeoutArguments | ForEach-Object {
+        ConvertTo-HookProcessArgument -Value ([string]$_)
+    }) -join ' ')
+    $timeoutStartInfo.UseShellExecute = $false
+    $timeoutStartInfo.CreateNoWindow = $true
+    $timeoutStartInfo.RedirectStandardInput = $true
+    $timeoutStartInfo.RedirectStandardOutput = $true
+    $timeoutStartInfo.RedirectStandardError = $true
+    $timeoutProbe = Invoke-SumiGuardTestChildProcess `
+        -StartInfo $timeoutStartInfo `
+        -InputText '' `
+        -TimeoutMilliseconds 250
+    Assert-Test $timeoutProbe.timed_out 'Waiting child did not hit the explicit timeout.'
+    Assert-Test $timeoutProbe.child_process_exited 'Timed-out child was not reaped.'
+    Assert-Test ([string]::IsNullOrEmpty($timeoutProbe.stdout_text) -and
+        [string]::IsNullOrEmpty($timeoutProbe.stderr_text)) `
+        'Waiting child unexpectedly produced captured output.'
+    $safeObjects.Add($timeoutProbe)
+    Add-TestResult -Name 'timed_out_child_is_reaped' -Evidence @{
+        timed_out = $timeoutProbe.timed_out
+        child_process_exited = $timeoutProbe.child_process_exited
+        stdout_empty = [string]::IsNullOrEmpty($timeoutProbe.stdout_text)
+        stderr_empty = [string]::IsNullOrEmpty($timeoutProbe.stderr_text)
     }
 
     $normalExecutionId = [Guid]::NewGuid().ToString('N')
