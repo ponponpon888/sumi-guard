@@ -95,6 +95,7 @@ function Invoke-SumiGuardTestChildProcess {
             }
             catch {
                 # The finally block retries the same process-specific cleanup.
+                Write-Verbose 'Timed-out child cleanup retry was deferred to finally.'
             }
             $process.WaitForExit()
         }
@@ -121,11 +122,13 @@ function Invoke-SumiGuardTestChildProcess {
             }
             catch {
                 # Cleanup is scoped to the Process instance started above.
+                Write-Verbose 'Process-specific cleanup did not need a second Kill call.'
             }
             try {
                 $process.WaitForExit()
             }
             catch {
+                Write-Verbose 'Process-specific WaitForExit cleanup returned an exception.'
             }
             foreach ($readTask in @($stdoutTask, $stderrTask)) {
                 if ($null -ne $readTask) {
@@ -133,6 +136,7 @@ function Invoke-SumiGuardTestChildProcess {
                         $readTask.Wait()
                     }
                     catch {
+                        Write-Verbose 'Async output task was already completed or disposed.'
                     }
                 }
             }
