@@ -1,5 +1,31 @@
 # SUMI Guard
 
+## 公開状態とセキュリティ境界
+
+SUMI Guardは、AI開発操作を対象にした**ローカル優先の監査基盤の試作**です。実行前にホストから
+渡された入力、SUMI Guardが行った評価、独立したOSプロセス観測を別々に記録し、取得できた範囲と
+相関の確度を表示します。実行前入力の取得は、コマンドが実際に実行されたことの証明ではありません。
+
+このREADMEの公開コードは`master`の確認済みコミット
+`36e56934d26fdc7ce2296ef39a6c50113dc405b8`を対象にしています。Release tagや安定版サポート契約は
+定義されていません。PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)とPR
+[#5](https://github.com/ponponpon888/sumi-guard/pull/5)は確認時点でDraft・未マージの設計／実装案で、
+masterのインストール手順や現在の既定動作には含めません。PR #5で提案されているCore Privacyの
+既定`MetadataOnly`も未マージです。
+
+`NO_DETECTION`は、対応しているルールに一致しなかったという評価結果であり、安全、無感染、完全捕捉、
+実行成功の保証ではありません。SUMI GuardはOS全体の防御、無感染判定、100%の捕捉、改ざん不能な
+証拠を提供しません。同じWindowsユーザーの別プロセス、管理者、侵害済みユーザーセッションからの
+読み取り・改変・削除を防げない点も含め、運用上の境界は`SECURITY.md`と`THREAT_MODEL.md`に記載します。
+
+### Short English summary
+
+SUMI Guard is a local-first prototype for auditing AI development operations. Pre-execution input,
+assessment output, and OS observations are separate evidence types; a pre-execution record is not proof
+that the command ran. `NO_DETECTION` is not a safety or malware-free guarantee. The public `master` is
+the reference snapshot for this document; Draft PRs #2 and #5, including PR #5's proposed MetadataOnly
+default, are not part of the public master behavior.
+
 SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
 評価するためのローカル監視試作です。
 
@@ -48,6 +74,9 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
+- `SECURITY.md`: 脆弱性報告の窓口、対象範囲、秘密情報を含めない報告方法
+- `THREAT_MODEL.md`: 保護対象、境界、脅威ごとの制御・試験・残余リスク
+- `CONTRIBUTING.md`: 小さな変更、合成データ、隔離検証の開発規約
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-17-assessment-origin-hook-value.md`: フック記録の `evaluation_origin` 追加の測定結果（実運用フックからの動作は未検証）
