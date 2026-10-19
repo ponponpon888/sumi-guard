@@ -14,8 +14,8 @@ if ([string]::IsNullOrWhiteSpace($RepositoryRoot)) {
     $RepositoryRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 }
 
-# Test scripts that use only synthetic input and do not import
-# SumiGuard.LocalStore. These run on a GitHub-hosted runner.
+# Test scripts that use only synthetic input and do not depend on DPAPI
+# CurrentUser. These run on a GitHub-hosted runner.
 #
 # arguments: passed to the script. A test whose cases only run behind a switch
 #   needs that switch here, otherwise the script reports an idle mode and exits
@@ -38,6 +38,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1'; arguments = @('-RunSyntheticTests'); needs_empty_demo_data = $true; success_property = 'synthetic_all_passed' },
     [pscustomobject]@{ name = 'Invoke-PowerShellCommandCliTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-RealHookRunnerSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' }
+    [pscustomobject]@{ name = 'Invoke-ExecutionAdapterMetadataLogLimitTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' }
 )
 
 # Test scripts this runner does not execute, with the reason. A passing run of
