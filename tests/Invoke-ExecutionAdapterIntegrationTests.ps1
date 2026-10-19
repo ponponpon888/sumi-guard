@@ -120,6 +120,52 @@ try {
 
     $syntheticSecret = @('SUMI', 'GUARD', 'SYNTHETIC', 'SECRET', '20261003') -join '_'
 
+    # Policy-based omission is a successful collection, not a storage failure.
+    # It must not create a protected-body file or a false failure notice.
+    $metadataExecutionId = [Guid]::NewGuid().ToString('N')
+    $bodiesBefore = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    $metadataOnly = Save-SumiGuardExecutionIntent `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -Body $syntheticSecret `
+        -ExecutionId $metadataExecutionId `
+        -MetadataOnly
+    Assert-Test $metadataOnly.success 'Metadata-only intent save failed.'
+    Assert-Test ($metadataOnly.status -ceq 'EVENT_SAVED_METADATA_ONLY') 'Metadata-only status changed.'
+    Assert-Test ($metadataOnly.body_storage_status -ceq 'OMITTED_BY_POLICY') 'Body policy was not recorded.'
+    $bodiesAfter = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    Assert-Test ($bodiesAfter -eq $bodiesBefore) 'Metadata-only path wrote a body container.'
+    $metaList = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test ($metaList.success -and $metaList.record_count -eq 1) 'Metadata-only record missing.'
+    $metaRecord = $metaList.records[0]
+    Assert-Test ($metaRecord.content_status -ceq 'HASH_ONLY') 'Metadata-only content status wrong.'
+    Assert-Test ($metaRecord.collection_status -ceq 'RECORDS_FOUND') 'Metadata-only was misclassified as failure.'
+    Assert-Test ([string]::IsNullOrEmpty([string]$metaRecord.failure_reason_code)) 'Metadata-only failure reason unexpected.'
+    Assert-Test ($metaRecord.body_reference_status -ceq 'NOT_STORED') 'Body reference incorrectly available.'
+    $noBody = Read-SumiGuardExecutionBody `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test (-not $noBody.success -and $noBody.status -ceq 'BODY_NOT_CAPTURED') `
+        'Metadata-only record unexpectedly allowed body read.'
+    $metadataNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $executionStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test ($metadataNotices.success -and $metadataNotices.notice_count -eq 0) `
+        'Metadata-only path emitted a false failure notice.'
+    $safeObjects.Add($metadataOnly)
+    $safeObjects.Add($metaList)
+    $safeObjects.Add($noBody)
+    Add-TestResult -Name 'metadata_only_omits_command_body' -Evidence @{
+        adapter_status = $metadataOnly.status
+        body_files_created = 0
+        read_status = $noBody.status
+        failure_notices = 0
+    }
+
     $normalExecutionId = [Guid]::NewGuid().ToString('N')
     $normal = Save-SumiGuardExecutionIntent `
         -ExecutionStorePath $executionStore `

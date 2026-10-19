@@ -23,6 +23,10 @@ param(
     [Parameter(Mandatory = $true)][string]$LocalStorePath,
     [Parameter(Mandatory = $true)][string]$AssessmentStorePath,
 
+    # Default to hash-only metadata. Raw command text can contain credentials;
+    # encrypted-body capture must be an explicit operator decision.
+    [switch]$CaptureCommandBody,
+
     # Separate from the primary store, per the collection-failure notice path in
     # docs/19. Only fixed codes are written here, never command text.
     [string]$NoticePath,
@@ -244,7 +248,8 @@ try {
                     -ExecutionStorePath $ExecutionStorePath `
                     -LocalStorePath $LocalStorePath `
                     -Body $commandText `
-                    -ExecutionId $executionId
+                    -ExecutionId $executionId `
+                    -MetadataOnly:(-not [bool]$CaptureCommandBody)
             }
             'TEST_SUCCESS' {
                 $intent = [pscustomobject][ordered]@{ success = $true; status = 'TEST_DOUBLE_SAVED' }
@@ -272,7 +277,8 @@ try {
                 $status = [string]$intent.status
             }
             $result.intent_storage_status = $status
-            $result.body_store_reached = ($TestIntentSaveOutcome -ceq 'ADAPTER')
+            $result.body_store_reached = ($TestIntentSaveOutcome -ceq 'ADAPTER' -and
+                [bool]$CaptureCommandBody)
         }
         else {
             $status = 'INTENT_STORE_FAILED'
