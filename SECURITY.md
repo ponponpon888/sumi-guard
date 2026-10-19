@@ -8,7 +8,9 @@
 - Release tag、安定版番号、長期サポート契約は確認できません。
 - 実装・検証対象のホストは Windows PowerShell 5.1 です。既存workflowは5.1の構文、UTF-8 BOM、PSScriptAnalyzer、DPAPIに依存しない合成試験を確認します。
 - `SumiGuard.LocalStore` は Windows DPAPI `CurrentUser` とWindows ACLに依存します。DPAPI依存試験はGitHub CIでは実行されず、運用端末と同じユーザー境界で別途確認が必要です。
-- PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2) とPR [#5](https://github.com/ponponpon888/sumi-guard/pull/5) は確認時点でDraft・未マージです。そこで提案される署名、監査整合性、容量上限の追加整理、既定MetadataOnlyなどを、公開masterの機能や運用手順として扱いません。
+- PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7) は確認時点でDraft・未マージです。そこで提案される既定MetadataOnly、ACL拒否、CIトリガー変更、署名、監査整合性、容量上限の追加整理などを、公開masterの機能や運用手順として扱いません。
+
+統合検証用の別worktree `integration/core-privacy-governance-ci` には、PR #5、#6、#7を順に取り込んだ候補があります。候補上ではMONITORの既定MetadataOnly、AssessmentStoreの不正ACL拒否（自動修復なし）、CIの`push`をmasterだけにする条件を確認できますが、これは公開masterに未反映です。公開masterの基準SHAは上記の `36e56934d26fdc7ce2296ef39a6c50113dc405b8` であり、統合候補のHEADとは別です。
 
 SUMI Guardはローカル優先の監査試作です。実行前入力、評価結果、OS観測は別の証拠です。実行前入力の記録は実行済みの証明ではなく、`NO_DETECTION` は安全・無感染・完全捕捉の保証ではありません。
 

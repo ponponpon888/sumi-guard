@@ -7,7 +7,8 @@
 ### 公開済み・未マージ・設計の区別
 
 - **公開済み**: `master` に含まれる `hooks/`、`src/`、`tools/`、既存 `tests/`、`.github/workflows/`。
-- **未マージ**: Draft PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2) とDraft PR [#5](https://github.com/ponponpon888/sumi-guard/pull/5)。PR #5の既定MetadataOnly、ACL保護の追加範囲は公開masterの既定動作ではありません。
+- **未マージ**: Draft PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)。PR #5の既定MetadataOnlyとACL保護、PR #7のCIトリガー変更は公開masterの既定動作ではありません。
+- **統合検証候補**: `integration/core-privacy-governance-ci` は、確認済みmasterからPR #5、#6、#7を順に取り込んだ別スナップショットです。候補ではMONITORの既定MetadataOnly、AssessmentStoreの不正ACL拒否（自動修復なし）、`push`をmasterだけにするCI条件を扱いますが、公開masterの制御として数えません。
 - **設計のみ**: `docs/19`、`docs/23`、`docs/24`、`docs/26` に記載された将来の相関、インタープリター検証、ENFORCE_RECORDING等。設計書の存在は実装・運用検証を意味しません。
 
 ## 保護対象

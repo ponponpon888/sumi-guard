@@ -9,6 +9,12 @@ SUMI Guardは、AI開発操作の実行前入力、評価、OS観測を分離し
 - `NO_DETECTION`、評価完了、実行前記録を安全・実行成功・実行済みの証拠として説明しない。
 - 署名、受領証、Audit Integrity、容量上限、ReadOnly、CI設定などを追加する場合は、既存の状態定義と別の設計・試験を先に用意する。
 
+## 統合検証候補
+
+`integration/core-privacy-governance-ci` は、確認済みmasterからPR #5（Core Privacy）、#6（security governance）、
+#7（CI hardening）を順に取り込んだ検証用ブランチです。ここで確認できるMetadataOnly、ACL拒否、CIトリガー条件は
+公開masterの既定動作ではありません。個別PRと統合PRを重複してマージせず、統合候補の結果を確認してから次の判断を行ってください。
+
 ## データと隔離
 
 検証は一時ディレクトリと固定の無害な合成データだけで行ってください。

@@ -8,10 +8,14 @@ SUMI Guardは、AI開発操作を対象にした**ローカル優先の監査基
 
 このREADMEの公開コードは`master`の確認済みコミット
 `36e56934d26fdc7ce2296ef39a6c50113dc405b8`を対象にしています。Release tagや安定版サポート契約は
-定義されていません。PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)とPR
-[#5](https://github.com/ponponpon888/sumi-guard/pull/5)は確認時点でDraft・未マージの設計／実装案で、
-masterのインストール手順や現在の既定動作には含めません。PR #5で提案されているCore Privacyの
-既定`MetadataOnly`も未マージです。
+定義されていません。PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、
+[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)は、
+この確認時点でDraft・未マージです。したがって、公開masterのインストール手順や既定動作には含めません。
+
+別worktreeの統合候補ブランチ `integration/core-privacy-governance-ci` は、上記確認済みmasterから
+PR #5、#6、#7を順に取り込んだ検証用スナップショットです。このブランチでは、Core Privacyとして
+MONITORの既定`MetadataOnly`（本文保存は明示指定時だけ）、AssessmentStoreの不正ACL拒否（自動修復なし）、
+CIの`push`をmasterだけにする条件を確認できます。これらは統合候補の動作であり、公開masterの既定動作ではありません。
 
 `NO_DETECTION`は、対応しているルールに一致しなかったという評価結果であり、安全、無感染、完全捕捉、
 実行成功の保証ではありません。SUMI GuardはOS全体の防御、無感染判定、100%の捕捉、改ざん不能な
@@ -23,8 +27,9 @@ masterのインストール手順や現在の既定動作には含めません�
 SUMI Guard is a local-first prototype for auditing AI development operations. Pre-execution input,
 assessment output, and OS observations are separate evidence types; a pre-execution record is not proof
 that the command ran. `NO_DETECTION` is not a safety or malware-free guarantee. The public `master` is
-the reference snapshot for this document; Draft PRs #2 and #5, including PR #5's proposed MetadataOnly
-default, are not part of the public master behavior.
+the reference snapshot for this document. Draft PRs #2, #5, #6, and #7 are not part of the public master
+behavior. The separate integration candidate contains Core Privacy and CI workflow hardening for review
+only; its MetadataOnly default, ACL rejection, and trigger conditions are not public-master defaults.
 
 SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
 評価するためのローカル監視試作です。
@@ -130,9 +135,12 @@ DPAPI CurrentUserとユーザーACLは、別ユーザーからの通常アクセ
 ## 実行記録との接続
 
 `SumiGuard.ExecutionAdapter` は、合成した実行前イベントの `execution_id`、本文SHA-256、取得状態、
-LocalStoreの本文参照だけを平文メタデータへ保存します。本文保存が完了してからイベントを書き、
-容量超過や暗号化失敗でもMONITOR動作を継続して `COLLECTION_FAILED` を記録します。通常の一覧APIは
+LocalStoreの本文参照だけを平文メタデータへ保存します。本文を保存する経路では保存が完了してから
+イベントを書き、容量超過や暗号化失敗でもMONITOR動作を継続して `COLLECTION_FAILED` を記録します。通常の一覧APIは
 本文を返さず、`Read-SumiGuardExecutionBody` を明示的に呼び出した場合だけ復号します。
+
+統合候補ブランチのMONITORフックは、`-CaptureCommandBody`を指定しない限り本文を保存せず、ハッシュと
+必要なメタデータを記録します。本文保存の明示指定時は既存の直接アダプタ呼出し契約を維持します。
 
 合成イベントでの8件の統合試験に加え、一回限りの子Codexセッションと固定入力1件で実フック接続を
 確認済みです。新しい試験は検証済みOS観測器をそのまま再利用しましたが、既存3スクリプト自体は
