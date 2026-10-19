@@ -218,7 +218,8 @@ function Start-WriterProcess {
 }
 
 function Stop-WriterProcesses {
-    foreach ($process in @($script:activeWriterProcesses)) {
+    $processes = @($script:activeWriterProcesses.ToArray())
+    foreach ($process in $processes) {
         try {
             if (-not $process.HasExited) {
                 $process.Kill()
