@@ -149,12 +149,109 @@ try {
         -CommandText "Write-Output 'hook unlinked sample'" `
         -ExecutionId '00000000000000000000000000000018'
 
+    $aclStore = Join-Path $script:AssessmentStoreTestRoot 'acl-store'
+    $aclCreate = New-SumiGuardAssessmentStore -StorePath $aclStore
+    Assert-SumiGuardAssessmentStoreTest ($aclCreate.success) 'ACL_STORE_CREATE'
+    $aclSave = Save-SumiGuardAssessment `
+        -StorePath $aclStore `
+        -Assessment $detected `
+        -EvaluationOrigin 'SYNTHETIC_TEST'
+    Assert-SumiGuardAssessmentStoreTest ($aclSave.success) 'ACL_STORE_BASELINE_SAVE'
+
     $secretMarker = 'SYNTHETIC_SECRET_56a07f'
     $urlMarker = 'https://example.invalid/private?token=SYNTHETIC_TOKEN_84'
     $pathMarker = 'C:\SyntheticPrivate\assessment-input.txt'
     $detected | Add-Member -NotePropertyName command_text -NotePropertyValue $secretMarker
     $detected | Add-Member -NotePropertyName source_excerpt -NotePropertyValue $urlMarker
     $detected | Add-Member -NotePropertyName exception_detail -NotePropertyValue $pathMarker
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'ASSESSMENT_STORE_PRIVATE_ACL' -Body {
+        $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        $allowed = @($sid, 'S-1-5-18')
+        $acl = Get-Acl -LiteralPath $aclStore
+        Assert-SumiGuardAssessmentStoreTest ([bool]$acl.AreAccessRulesProtected) 'ACL_NOT_PROTECTED'
+        foreach ($file in @(
+            $aclStore,
+            (Join-Path $aclStore '.sumi-guard-assessment-store.json'),
+            (Join-Path $aclStore '.sumi-guard-assessment-store.lock'),
+            (Join-Path $aclStore 'assessments.ndjson'))) {
+            $fileAcl = Get-Acl -LiteralPath $file
+            $rules = @($fileAcl.GetAccessRules($true, $true,
+                [Security.Principal.SecurityIdentifier]))
+            Assert-SumiGuardAssessmentStoreTest ($rules.Count -gt 0) 'MISSING_ACL_RULES'
+            foreach ($rule in $rules) {
+                $full = (($rule.FileSystemRights -band
+                    [Security.AccessControl.FileSystemRights]::FullControl) -eq
+                    [Security.AccessControl.FileSystemRights]::FullControl)
+                Assert-SumiGuardAssessmentStoreTest (
+                    $allowed -ccontains $rule.IdentityReference.Value -and
+                    $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                    $full
+                ) 'UNEXPECTED_ACL_RULE'
+            }
+        }
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'INHERITED_DIRECTORY_ACL_IS_REJECTED' -Body {
+        # A normal temporary directory is used as-is. This test does not alter
+        # its ACL; it proves that the inherited-rule condition is rejected
+        # before marker, lock, or record access is attempted.
+        $inheritedStore = Join-Path $script:AssessmentStoreTestRoot 'inherited-acl-store'
+        $null = New-Item -ItemType Directory -Path $inheritedStore -Force
+        $inheritedAcl = Get-Acl -LiteralPath $inheritedStore
+        Assert-SumiGuardAssessmentStoreTest (
+            -not [bool]$inheritedAcl.AreAccessRulesProtected
+        ) 'TEMP_DIRECTORY_ACL_WAS_ALREADY_PROTECTED'
+        $inheritedRead = Get-SumiGuardAssessmentRecord -StorePath $inheritedStore
+        Assert-SumiGuardAssessmentStoreTest (
+            -not $inheritedRead.success -and $inheritedRead.status -ceq 'STORE_ACL_INVALID'
+        ) 'INHERITED_DIRECTORY_ACL_ACCEPTED'
+    }
+
+    Invoke-SumiGuardAssessmentStoreTestCase -Name 'TAMPERED_ASSESSMENT_FILE_ACL_IS_REJECTED_WITHOUT_REPAIR' -Body {
+        $recordFile = Join-Path $aclStore 'assessments.ndjson'
+        $originalAcl = Get-Acl -LiteralPath $recordFile
+        $originalBytes = [IO.File]::ReadAllBytes($recordFile)
+        try {
+            $tamperedAcl = Get-Acl -LiteralPath $recordFile
+            $users = New-Object Security.Principal.SecurityIdentifier('S-1-5-32-545')
+            $otherRule = New-Object Security.AccessControl.FileSystemAccessRule(
+                $users,
+                [Security.AccessControl.FileSystemRights]::Read,
+                [Security.AccessControl.AccessControlType]::Allow)
+            [void]$tamperedAcl.AddAccessRule($otherRule)
+            Set-Acl -LiteralPath $recordFile -AclObject $tamperedAcl -ErrorAction Stop
+            $tamperedSddl = (Get-Acl -LiteralPath $recordFile).Sddl
+            $read = Get-SumiGuardAssessmentRecord -StorePath $aclStore
+            $save = Save-SumiGuardAssessment `
+                -StorePath $aclStore `
+                -Assessment $detected `
+                -EvaluationOrigin 'SYNTHETIC_TEST'
+            $retry = New-SumiGuardAssessmentStore -StorePath $aclStore
+            Assert-SumiGuardAssessmentStoreTest (
+                -not $read.success -and $read.status -ceq 'STORE_ACL_INVALID'
+            ) 'TAMPERED_FILE_ACL_ACCEPTED'
+            Assert-SumiGuardAssessmentStoreTest (
+                -not $save.success -and $save.status -ceq 'STORE_ACL_INVALID'
+            ) 'TAMPERED_FILE_ACL_WRITE_CONTINUED'
+            Assert-SumiGuardAssessmentStoreTest (
+                -not $retry.success -and $retry.status -ceq 'STORE_ACL_INVALID'
+            ) 'TAMPERED_FILE_ACL_AUTO_REPAIRED'
+            Assert-SumiGuardAssessmentStoreTest (
+                (Get-Acl -LiteralPath $recordFile).Sddl -ceq $tamperedSddl
+            ) 'TAMPERED_FILE_ACL_REPAIRED'
+            $afterBytes = [IO.File]::ReadAllBytes($recordFile)
+            Assert-SumiGuardAssessmentStoreTest (
+                [Convert]::ToBase64String($afterBytes) -ceq [Convert]::ToBase64String($originalBytes)
+            ) 'TAMPERED_FILE_DATA_CHANGED'
+        }
+        finally {
+            Set-Acl -LiteralPath $recordFile -AclObject $originalAcl -ErrorAction Stop
+            if ($null -ne $originalBytes -and $originalBytes.Length -gt 0) {
+                [Array]::Clear($originalBytes, 0, $originalBytes.Length)
+            }
+        }
+    }
 
     Invoke-SumiGuardAssessmentStoreTestCase -Name 'FOUR_STATES_AND_PARTIAL_ROUND_TRIP' -Body {
         $items = @($detected, $noDetection, $unassessable, $evaluationFailed, $partial)
