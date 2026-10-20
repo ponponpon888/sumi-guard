@@ -6,8 +6,10 @@
 公式資料と実装の双方で調査し、既存フックへ最小の変更として `CLAUDE_PRETOOLUSE` プロファイルを
 追加した記録です。
 
-本書は**合成データによる実装と試験までの記録**です。実 Claude ホストへの接続、運用ストアの使用、
-恒久フック登録、Release のいずれも行っていません。Codex の W2（起動試行・フック未到達・認証条件
+本書は**合成データによる実装・試験と、実 Claude ホストでの限定接続試験の記録**です。
+2026-10-20 に Claude Code 2.1.304 からプロジェクトローカルの `PreToolUse` フックへ接続し、
+試験用一時ストアへの記録と本文非保存を確認しました。運用ストアの使用、恒久フック登録、
+グローバル設定の変更、Release は行っていません。Codex の W2（起動試行・フック未到達・認証条件
 未成立）とは別の作業であり、片方の結果をもう片方の根拠にしないでください。
 
 ## 調査の根拠
@@ -115,10 +117,30 @@ Codex 側の算出式は変更していないため、既存ストアの ID は�
 `docs/24` の結論は変わりません。Claude Code のフック入力にも、対象インタープリターの実体・版・
 起動設定を示す信頼済みフィールドはありません。
 
-## 登録（未実施）
+## 試験用ストアの初期化
 
-登録は**まだ行っていません**。接続試験を承認する場合の形は次のとおりです。グローバル設定
-（`~/.claude/settings.json`）ではなく、対象プロジェクトの `.claude/settings.json` に限定します。
+フック登録より先に、3ストアを各モジュールの公開関数で初期化する必要があります。フックは
+セキュリティ境界を曖昧にしないため、未初期化ストアを自動作成しません。
+
+```powershell
+Import-Module "<repo>\src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1" -Force
+Import-Module "<repo>\src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1" -Force
+Import-Module "<repo>\src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1" -Force
+
+SumiGuard.LocalStore\Initialize-SumiGuardLocalStore -Path "<試験用一時領域>\body-store"
+SumiGuard.ExecutionAdapter\Initialize-SumiGuardExecutionStore -Path "<試験用一時領域>\execution-store"
+SumiGuard.AssessmentStore\New-SumiGuardAssessmentStore -StorePath "<試験用一時領域>\assessment-store"
+```
+
+各結果の `success` が真であることを確認してから登録します。未初期化のまま接続した最初の試行では
+`STORE_ACL_INVALID` / `EXECUTION_STORE_VALIDATION_FAILED` となり、MONITOR としてツール実行は
+継続しましたが記録されませんでした。
+
+## 試験用ローカル登録（実施済み）
+
+2026-10-20 の限定接続試験では、ユーザー全体の設定や共有設定を変更せず、対象プロジェクトの
+`.claude/settings.local.json` にだけ登録しました。このファイルはリポジトリ共通の
+`.git/info/exclude` でローカル除外し、作業ツリーへ含めていません。
 
 `args` を使う exec 形式にします。`args` を省くと Windows では Git Bash を経由するため、Windows
 パスの引用が壊れます。exec 形式はシェルを介さず直接起動します。
@@ -149,8 +171,40 @@ Codex 側の算出式は変更していないため、既存ストアの ID は�
 }
 ```
 
-`-TrustedWindowsPowerShellRoute` は含めていません。接続試験の初回は未確認のまま
-`UNASSESSABLE` を確認し、経路の宣言はその後に別途判断します。`-CaptureCommandBody` も付けません。
+`-TrustedWindowsPowerShellRoute` は含めていません。接続試験では未確認のまま
+`UNASSESSABLE` となることを確認しました。経路の宣言はその後に別途判断します。
+`-CaptureCommandBody` も付けていません。
+
+## 実 Claude ホスト接続試験（2026-10-20）
+
+Windows PowerShell 5.1 と Claude Code 2.1.304 の実環境で、`PowerShell` ツールを1回だけ実行し、
+日本語と BMP 外の絵文字を含む次の出力が欠落・文字化けせず復元されることを確認しました。
+
+```text
+SUMI_GUARD_LIVE_TEST_2_日本語_😀
+```
+
+フックの応答は次のとおりでした。
+
+```text
+SUMI Guard MONITOR: evaluation=UNASSESSABLE; assessment_storage=SAVED; intent_storage=EVENT_SAVED_METADATA_ONLY; response=monitor-only.
+```
+
+記録を公開 API で読み戻し、次を確認しました。
+
+| 確認項目 | 実測値 |
+|---|---|
+| Execution record | `RECORDS_READ`、1件 |
+| Assessment record | `RECORDS_READ`、1件 |
+| 本文の扱い | `content_status=HASH_ONLY`、`body_reference_status=NOT_STORED` |
+| 評価 | `UNASSESSABLE`、`evaluation_origin=CLAUDE_PRETOOLUSE_HOOK` |
+| 評価レコードへの本文混入 | `content_included=False` |
+| LocalStore の本文容器 | `.sgb` 0件 |
+| 一時領域内の生コマンド文字列 | 0件 |
+| Git 作業ツリー | 差分なし |
+
+これにより、実ホストからフックへの到達、stdin の UTF-8 復号、実行・評価ストアへのメタデータ保存、
+MONITOR の非遮断動作、本文非保存を同一試行で確認しました。
 
 ## stdin の UTF-8 復号（別コミットで修正済み）
 
@@ -237,6 +291,6 @@ DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず�
 
 ## 未実施
 
-- 実 Claude ホストへの接続と、フックへ到達したうえでの検証。
 - 運用ストアの使用、恒久フック登録、グローバル設定の変更、Release。
+- `-TrustedWindowsPowerShellRoute` を伴う確認済み経路としての評価。
 - `master` へのマージ。
