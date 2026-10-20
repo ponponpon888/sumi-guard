@@ -228,8 +228,10 @@ function Start-WriterProcess {
     $startInfo.RedirectStandardError = $true
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
+    $started = $false
     try {
-        if (-not $process.Start()) {
+        $started = $process.Start()
+        if (-not $started) {
             throw [System.InvalidOperationException]::new('Could not start the synthetic writer process.')
         }
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
@@ -242,17 +244,21 @@ function Start-WriterProcess {
         }
     }
     catch {
-        try {
-            if (-not $process.HasExited) { $process.Kill() }
-            $process.WaitForExit()
+        if ($started) {
+            try {
+                if (-not $process.HasExited) { $process.Kill() }
+                [void]$process.WaitForExit(30000)
+            }
+            catch {
+                $script:childProcessesCleaned = $false
+            }
         }
-        catch { }
         $process.Dispose()
         throw
     }
 }
 
-function Wait-WriterProcesses {
+function Wait-WriterProcess {
     param([int]$TimeoutMilliseconds = 90000)
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
@@ -353,7 +359,7 @@ try {
                 -Kind Event `
                 -Token ([string]$token)))
         }
-        Wait-WriterProcesses -TimeoutMilliseconds 90000
+        Wait-WriterProcess -TimeoutMilliseconds 90000
         $writerResults = @($script:activeWriterProcesses.ToArray() | ForEach-Object {
             $exitCode = $_.process.ExitCode
             if ($null -eq $exitCode) {
