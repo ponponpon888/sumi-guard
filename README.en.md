@@ -2,6 +2,8 @@
 
 [![Windows PowerShell 5.1 CI](https://github.com/ponponpon888/sumi-guard/actions/workflows/windows-powershell-5.1-check.yml/badge.svg)](https://github.com/ponponpon888/sumi-guard/actions/workflows/windows-powershell-5.1-check.yml)
 
+<img src="docs/assets/sumi-guard-social-preview.png" alt="SUMI Guard — Local-First AI Tool Audit" width="100%">
+
 **A local-first audit prototype for Claude Code and Codex pre-tool events on Windows.**
 
 [日本語](README.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
