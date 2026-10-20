@@ -1,5 +1,11 @@
 ﻿<#
-    SUMI Guard MONITOR hook for a Codex PreToolUse event.
+    SUMI Guard MONITOR hook for a PreToolUse event.
+
+    Two hosts emit a PreToolUse event with different field sets, so the shape of
+    the event is selected by -HookInputProfile rather than guessed. The default
+    stays CODEX_PRETOOLUSE, whose required fields, execution_id and evaluation
+    origin are unchanged. CLAUDE_PRETOOLUSE is the Claude Code shape, which
+    carries no turn_id; see docs/28-claude-code-hook-compatibility.md.
 
     Stage 5 of docs/23-suspicious-execution-warning-design.md. It assesses the
     command text in memory before the body reaches the local store, saves the
@@ -31,10 +37,22 @@ param(
     # docs/19. Only fixed codes are written here, never command text.
     [string]$NoticePath,
 
+    # Selects the hook-event shape. The two hosts do not agree on the identity
+    # fields: a Codex PreToolUse event carries turn_id, a Claude Code one does
+    # not. Guessing the shape from the fields that happen to be present would
+    # let a malformed event of one host read as a valid event of the other, so
+    # the operator names the host in the registration instead.
+    [ValidateSet('CODEX_PRETOOLUSE', 'CLAUDE_PRETOOLUSE')]
+    [string]$HookInputProfile = 'CODEX_PRETOOLUSE',
+
     # Asserts that the hook registration restricts this event to a Windows
     # PowerShell host. Nothing in the hook JSON can establish that, so without
     # this switch the interpreter stays unverified and the assessment comes back
     # UNASSESSABLE / UNSUPPORTED_LANGUAGE instead of being guessed from the text.
+    #
+    # Under CLAUDE_PRETOOLUSE the switch is additionally refused for tool_name
+    # Bash, because there that name is Git Bash and not a PowerShell host. The
+    # switch narrows what may be trusted; it never widens it.
     [switch]$TrustedWindowsPowerShellRoute,
 
     # CODEX_PRETOOLUSE_HOOK records that this assessment was made by a Codex
@@ -44,7 +62,13 @@ param(
     # Keeping them apart in the store is what lets a reader tell the two apart.
     # MANAGED_EXECUTION stays selectable for an operator who routes this script
     # from the managed runner instead of from a hook.
-    [ValidateSet('CODEX_PRETOOLUSE_HOOK', 'MANAGED_EXECUTION')]
+    #
+    # CLAUDE_PRETOOLUSE_HOOK is the same weaker claim for a Claude Code hook.
+    # It is a separate value so that a reader can tell which host observed the
+    # command; an origin that disagrees with the profile is refused rather than
+    # resolved, and neither host's origin is ever promoted to the other's or to
+    # MANAGED_EXECUTION.
+    [ValidateSet('CODEX_PRETOOLUSE_HOOK', 'CLAUDE_PRETOOLUSE_HOOK', 'MANAGED_EXECUTION')]
     [string]$EvaluationOrigin = 'CODEX_PRETOOLUSE_HOOK',
 
     # Writes the detailed result as JSON. The hook response on standard output
@@ -76,13 +100,60 @@ if ([string]::IsNullOrWhiteSpace($NoticePath)) {
     $NoticePath = Join-Path $AssessmentStorePath 'monitor-hook-notices.ndjson'
 }
 
-function Get-SumiGuardPreToolExecutionId {
-    param([Parameter(Mandatory = $true)]$HookInput)
+# The identity fields each profile requires, and the tool names it collects.
+# Keeping this in one table is what makes "Claude Code has no turn_id" a
+# property of the profile rather than a condition spread through the checks.
+$script:HookInputProfiles = @{
+    CODEX_PRETOOLUSE = [pscustomobject]@{
+        identity_fields = @('session_id', 'turn_id', 'tool_use_id')
+        tool_names = @('Bash')
+        allowed_origins = @('CODEX_PRETOOLUSE_HOOK', 'MANAGED_EXECUTION')
+        default_origin = 'CODEX_PRETOOLUSE_HOOK'
+    }
+    CLAUDE_PRETOOLUSE = [pscustomobject]@{
+        # No turn_id. Claude Code emits one only for MessageDisplay, so there is
+        # nothing here to stand in for it and nothing is substituted.
+        identity_fields = @('session_id', 'tool_use_id')
+        tool_names = @('Bash', 'PowerShell')
+        allowed_origins = @('CLAUDE_PRETOOLUSE_HOOK')
+        default_origin = 'CLAUDE_PRETOOLUSE_HOOK'
+    }
+}
+$script:ActiveProfile = $script:HookInputProfiles[$HookInputProfile]
 
-    [byte[]]$bytes = $script:Utf8Strict.GetBytes(
-        ([string]$HookInput.session_id) + '|' +
-        ([string]$HookInput.turn_id) + '|' +
-        ([string]$HookInput.tool_use_id))
+# An origin left at the parameter default follows the profile. An origin the
+# caller actually named must agree with it: a Claude Code event recorded as
+# CODEX_PRETOOLUSE_HOOK or MANAGED_EXECUTION would claim an observation that
+# did not happen, so the mismatch is refused instead of being resolved.
+$script:OriginExplicit = $PSBoundParameters.ContainsKey('EvaluationOrigin')
+if (-not $script:OriginExplicit) {
+    $EvaluationOrigin = $script:ActiveProfile.default_origin
+}
+$script:OriginAccepted = ($EvaluationOrigin -cin $script:ActiveProfile.allowed_origins)
+
+function Get-SumiGuardPreToolExecutionId {
+    param(
+        [Parameter(Mandatory = $true)]$HookInput,
+        [Parameter(Mandatory = $true)][string]$ProfileName
+    )
+
+    # Each profile hashes a different string, and the Claude one is prefixed
+    # with its own name. Two hosts that happen to issue the same session_id and
+    # tool_use_id therefore land on different execution ids: the identity space
+    # is split by host rather than shared. The Codex composition is unchanged,
+    # so ids already in a store keep resolving.
+    if ($ProfileName -ceq 'CLAUDE_PRETOOLUSE') {
+        $material = "CLAUDE_PRETOOLUSE_HOOK`n" +
+            ([string]$HookInput.session_id) + "`n" +
+            ([string]$HookInput.tool_use_id)
+    }
+    else {
+        $material = ([string]$HookInput.session_id) + '|' +
+            ([string]$HookInput.turn_id) + '|' +
+            ([string]$HookInput.tool_use_id)
+    }
+
+    [byte[]]$bytes = $script:Utf8Strict.GetBytes($material)
     $sha = [Security.Cryptography.SHA256]::Create()
     try {
         return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant().Substring(0, 32)
@@ -94,22 +165,55 @@ function Get-SumiGuardPreToolExecutionId {
 }
 
 function Test-SumiGuardPreToolInput {
-    param([AllowNull()]$Value)
+    param(
+        [AllowNull()]$Value,
+        [Parameter(Mandatory = $true)]$ProfileSpec
+    )
 
     if ($null -eq $Value -or $Value -is [Array]) { return $false }
-    foreach ($name in @('hook_event_name', 'tool_name', 'session_id', 'turn_id', 'tool_use_id', 'tool_input')) {
+    $required = @('hook_event_name', 'tool_name', 'tool_input') + $ProfileSpec.identity_fields
+    foreach ($name in $required) {
         if ($Value.PSObject.Properties.Name -cnotcontains $name) { return $false }
     }
     if ([string]$Value.hook_event_name -cne 'PreToolUse' -or
-        [string]$Value.tool_name -cne 'Bash' -or
+        ([string]$Value.tool_name) -cnotin $ProfileSpec.tool_names -or
         $null -eq $Value.tool_input) {
         return $false
     }
-    foreach ($name in @('session_id', 'turn_id', 'tool_use_id')) {
+    foreach ($name in $ProfileSpec.identity_fields) {
         if ([string]::IsNullOrWhiteSpace([string]$Value.$name)) { return $false }
     }
     return ($Value.tool_input.PSObject.Properties.Name -ccontains 'command' -and
         $Value.tool_input.command -is [string])
+}
+
+# Decides the interpreter for one event. Nothing in the event proves which
+# interpreter will read the command, so the only thing that can raise this
+# above UNKNOWN is the operator's route assertion, and only where the tool name
+# does not already contradict it.
+function Get-SumiGuardInterpreterDecision {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProfileName,
+        [Parameter(Mandatory = $true)][string]$ToolName,
+        [Parameter(Mandatory = $true)][bool]$RouteAsserted
+    )
+
+    if ($ProfileName -ceq 'CLAUDE_PRETOOLUSE' -and $ToolName -ceq 'Bash') {
+        # Claude Code runs its Bash tool through Git Bash. A route assertion
+        # cannot make that a PowerShell host, so it is refused here and the
+        # command is left to the evaluator as an unsupported language.
+        $reason = if ($RouteAsserted) { 'ROUTE_ASSERTION_REJECTED_FOR_TOOL' } else { 'TARGET_INTERPRETER_UNVERIFIED' }
+        return [pscustomobject]@{ verified = $false; kind = 'OTHER'; reason_code = $reason }
+    }
+
+    if (-not $RouteAsserted) {
+        # Includes the Claude Code PowerShell tool. The tool name alone is a
+        # tool identity, not evidence of the executable, its version or its
+        # launch configuration, so on its own it verifies nothing.
+        return [pscustomobject]@{ verified = $false; kind = 'UNKNOWN'; reason_code = 'TARGET_INTERPRETER_UNVERIFIED' }
+    }
+
+    return [pscustomobject]@{ verified = $true; kind = 'WINDOWS_POWERSHELL'; reason_code = 'HOOK_REGISTRATION_RESTRICTS_HOST' }
 }
 
 # Only fixed codes reach the notice path. No command text, no argument values,
@@ -151,8 +255,10 @@ function Write-SumiGuardMonitorNotice {
 $result = [ordered]@{
     hook_schema_version = 1
     hook_status = 'NOT_STARTED'
+    hook_input_profile = $HookInputProfile
     execution_id = $null
     interpreter_verified = $false
+    interpreter_kind = 'UNKNOWN'
     interpreter_reason_code = 'TARGET_INTERPRETER_UNVERIFIED'
     assessment_status = 'NOT_OBTAINED'
     assessment_obtained = $false
@@ -181,25 +287,38 @@ try {
     $hookInput = $null
     try { $hookInput = $RawHookInputJson | ConvertFrom-Json -ErrorAction Stop } catch { $hookInput = $null }
 
-    if (-not (Test-SumiGuardPreToolInput $hookInput)) {
+    if (-not $script:OriginAccepted) {
+        # A registration fault, not an event fault. Nothing is assessed or
+        # stored, because the only record this run could write would carry an
+        # origin that misstates which host saw the command.
+        $result.hook_status = 'INVALID_HOOK_CONFIGURATION'
+        $result.interpreter_reason_code = 'EVALUATION_ORIGIN_PROFILE_MISMATCH'
+        $result.notice_status = Write-SumiGuardMonitorNotice `
+            -Stage 'configuration' -ReasonCode 'EVALUATION_ORIGIN_PROFILE_MISMATCH' -ExecutionId $null
+    }
+    elseif (-not (Test-SumiGuardPreToolInput -Value $hookInput -ProfileSpec $script:ActiveProfile)) {
         # Out of the collected range. Nothing is stored and nothing is denied:
         # a hook that cannot read its own event says nothing about the command.
+        # No notice is written here, which is the established behaviour for this
+        # state and is left unchanged by the profile work.
         $result.hook_status = 'INVALID_HOOK_INPUT'
         $result.interpreter_reason_code = 'HOOK_INPUT_INVALID'
     }
     else {
         $result.hook_status = 'IN_PROGRESS'
-        $executionId = Get-SumiGuardPreToolExecutionId $hookInput
+        $executionId = Get-SumiGuardPreToolExecutionId -HookInput $hookInput -ProfileName $HookInputProfile
         $result.execution_id = $executionId
         $commandText = [string]$hookInput.tool_input.command
 
-        $verified = [bool]$TrustedWindowsPowerShellRoute
+        $interpreter = Get-SumiGuardInterpreterDecision `
+            -ProfileName $HookInputProfile `
+            -ToolName ([string]$hookInput.tool_name) `
+            -RouteAsserted ([bool]$TrustedWindowsPowerShellRoute)
+        $verified = [bool]$interpreter.verified
+        $interpreterKind = [string]$interpreter.kind
         $result.interpreter_verified = $verified
-        $interpreterKind = 'UNKNOWN'
-        if ($verified) {
-            $interpreterKind = 'WINDOWS_POWERSHELL'
-            $result.interpreter_reason_code = 'HOOK_REGISTRATION_RESTRICTS_HOST'
-        }
+        $result.interpreter_kind = $interpreterKind
+        $result.interpreter_reason_code = [string]$interpreter.reason_code
 
         Import-Module $script:AssessmentManifest -Force -ErrorAction Stop
         Import-Module $script:AssessmentStoreManifest -Force -ErrorAction Stop

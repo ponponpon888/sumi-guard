@@ -13,8 +13,14 @@ $script:SumiGuardAssessmentStoreTestForceAtomicWriteFailure = $false
 # execution record. SYNTHETIC_TEST must not carry one, so test data can never be
 # mistaken for a record of something that ran. Every other origin must carry one,
 # because the whole value of the record is that it points at a specific execution.
-$script:EvaluationOrigins = @('SYNTHETIC_TEST', 'MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK')
-$script:EvaluationOriginsRequiringExecutionId = @('MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK')
+# CODEX_PRETOOLUSE_HOOK and CLAUDE_PRETOOLUSE_HOOK are separate values on
+# purpose: both mean "a hook saw this before it ran", but a reader has to be
+# able to tell which host it was, because the hosts differ in what their event
+# establishes about the interpreter.
+$script:EvaluationOrigins = @(
+    'SYNTHETIC_TEST', 'MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK', 'CLAUDE_PRETOOLUSE_HOOK')
+$script:EvaluationOriginsRequiringExecutionId = @(
+    'MANAGED_EXECUTION', 'CODEX_PRETOOLUSE_HOOK', 'CLAUDE_PRETOOLUSE_HOOK')
 
 function New-SumiGuardAssessmentStoreResult {
     param(

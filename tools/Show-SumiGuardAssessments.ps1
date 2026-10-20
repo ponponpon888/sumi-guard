@@ -49,6 +49,7 @@ function Get-SumiGuardAssessmentOriginText {
         'SYNTHETIC_TEST' { return '試験データ' }
         'MANAGED_EXECUTION' { return '管理下実行の評価' }
         'CODEX_PRETOOLUSE_HOOK' { return 'フック経由の実行前評価' }
+        'CLAUDE_PRETOOLUSE_HOOK' { return 'Claude Codeフック経由の実行前評価' }
         default { return '説明未定義 [' + $Code + ']' }
     }
 }
@@ -153,6 +154,10 @@ function Invoke-SumiGuardAssessmentDisplay {
     }
     elseif ($record.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') {
         Write-Output '注意: 実行前のフックが評価した記録です。実行されたかどうかは、この記録では確認できません。'
+    }
+    elseif ($record.evaluation_origin -ceq 'CLAUDE_PRETOOLUSE_HOOK') {
+        Write-Output '注意: 実行前のフックが評価した記録です。実行されたかどうかは、この記録では確認できません。'
+        Write-Output '注意: Claude Codeホストの記録です。Codexの記録とは別の識別空間です。'
     }
     else {
         Write-Output '注意: 評価記録です。この記録だけでは実行状態を確認できません。'
