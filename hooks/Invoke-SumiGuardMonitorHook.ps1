@@ -216,6 +216,55 @@ function Get-SumiGuardInterpreterDecision {
     return [pscustomobject]@{ verified = $true; kind = 'WINDOWS_POWERSHELL'; reason_code = 'HOOK_REGISTRATION_RESTRICTS_HOST' }
 }
 
+# Reads the hook event from standard input as bytes, then decodes it as UTF-8.
+# [Console]::In decodes with the console input code page, so on a system whose
+# code page is not UTF-8 a host's UTF-8 event arrives as mojibake and a leading
+# BOM arrives as stray characters before the first brace. Either way the event
+# fails to parse and the hook records nothing. Reading the stream before any
+# code page applies is what makes the decoding the host's, not the console's.
+function Read-SumiGuardHookInputText {
+    $stream = [Console]::OpenStandardInput()
+    $buffer = New-Object System.IO.MemoryStream
+    try {
+        [byte[]]$chunk = New-Object byte[] 8192
+        while ($true) {
+            $read = $stream.Read($chunk, 0, $chunk.Length)
+            if ($read -le 0) { break }
+            $buffer.Write($chunk, 0, $read)
+        }
+        [byte[]]$bytes = $buffer.ToArray()
+
+        # Only a BOM at the very start is consumed, and only the UTF-8 one. No
+        # encoding is guessed from the bytes, so a UTF-16 event is malformed
+        # UTF-8 rather than something to re-interpret, and a BOM sequence
+        # anywhere else stays part of the content.
+        $offset = 0
+        if ($bytes.Length -ge 3 -and
+            $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+            $offset = 3
+        }
+
+        try {
+            # Utf8Strict throws on malformed input instead of substituting
+            # U+FFFD. A replaced byte would be assessed and hashed as though it
+            # were the command the host actually sent.
+            return [pscustomobject]@{
+                status = 'DECODED'
+                text = $script:Utf8Strict.GetString($bytes, $offset, $bytes.Length - $offset)
+            }
+        }
+        catch {
+            # The bytes are not reported. A fixed state is all that leaves this
+            # function, so no fragment of an unreadable command can reach the
+            # result, the notice or the response.
+            return [pscustomobject]@{ status = 'NOT_UTF8'; text = '' }
+        }
+    }
+    finally {
+        $buffer.Dispose()
+    }
+}
+
 # Only fixed codes reach the notice path. No command text, no argument values,
 # no paths from the input, no exception messages.
 function Write-SumiGuardMonitorNotice {
@@ -256,6 +305,7 @@ $result = [ordered]@{
     hook_schema_version = 1
     hook_status = 'NOT_STARTED'
     hook_input_profile = $HookInputProfile
+    hook_input_decode_status = 'NOT_ATTEMPTED'
     execution_id = $null
     interpreter_verified = $false
     interpreter_kind = 'UNKNOWN'
@@ -279,15 +329,28 @@ $assessment = $null
 try {
     # An unbound [string] parameter can arrive as $null or as an empty string
     # depending on how the host invoked the script, and both mean "nothing was
-    # passed", so standard input is the source in either case.
+    # passed", so standard input is the source in either case. A value passed
+    # with -RawHookInputJson is already a string and is used unchanged.
     if ([string]::IsNullOrEmpty($RawHookInputJson)) {
-        $RawHookInputJson = [Console]::In.ReadToEnd()
+        $decoded = Read-SumiGuardHookInputText
+        $result.hook_input_decode_status = [string]$decoded.status
+        $RawHookInputJson = [string]$decoded.text
+    }
+    else {
+        $result.hook_input_decode_status = 'DIRECT_ARGUMENT'
     }
 
     $hookInput = $null
     try { $hookInput = $RawHookInputJson | ConvertFrom-Json -ErrorAction Stop } catch { $hookInput = $null }
 
-    if (-not $script:OriginAccepted) {
+    if ([string]$result.hook_input_decode_status -ceq 'NOT_UTF8') {
+        # Distinct from a well-formed event that says nothing useful: the bytes
+        # could not be read as the encoding the contract names. Nothing is
+        # assessed, stored or denied, and the reason stays a fixed code.
+        $result.hook_status = 'INVALID_HOOK_INPUT'
+        $result.interpreter_reason_code = 'HOOK_INPUT_NOT_UTF8'
+    }
+    elseif (-not $script:OriginAccepted) {
         # A registration fault, not an event fault. Nothing is assessed or
         # stored, because the only record this run could write would carry an
         # origin that misstates which host saw the command.

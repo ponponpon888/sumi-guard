@@ -58,7 +58,7 @@ PowerShell AST として評価することになります。これは `docs/24` 
 | 項目 | 確認結果 |
 |---|---|
 | 応答契約 | `{"systemMessage":"..."}` + 終了コード0 は有効。`systemMessage` は全イベント共通の任意出力。`permissionDecision` を返さないため実行は継続し、MONITOR の意味論が保たれます |
-| 入力経路 | stdin。`[Console]::In.ReadToEnd()` のままで到達します（ただし後述の文字コード問題あり） |
+| 入力経路 | stdin。到達しますが、復号は後述のとおり修正が必要でした |
 | `tool_input.command` | `Bash`・`PowerShell` 両ツールに存在 |
 | タイムアウト | command フックの既定は600秒。`PreToolUse` はタイムアウトしても既定で遮断しません。`onFailure:"block"` は MONITOR では指定しません |
 | 終了コード | 0=正常、2=遮断。本フックは常に0のため遮断事故は起きません |
@@ -146,35 +146,67 @@ Codex 側の算出式は変更していないため、既存ストアの ID は�
 `-TrustedWindowsPowerShellRoute` は含めていません。接続試験の初回は未確認のまま
 `UNASSESSABLE` を確認し、経路の宣言はその後に別途判断します。`-CaptureCommandBody` も付けません。
 
-## 未解決の阻害要因: stdin の文字コード（本変更では直していません）
+## stdin の UTF-8 復号（別コミットで修正済み）
 
-接続試験の前に判断が必要な、**本変更とは別の既存の欠陥**です。
+### 修正前の欠陥
 
-フックは `[Console]::In.ReadToEnd()` で stdin を読みます。Windows PowerShell 5.1 はこれを
-コンソール入力コードページで復号します。本PCでは `shift_jis` です。一方 Claude Code は
-stdin へ UTF-8 の JSON を書き込み、`JSON.stringify` は非 ASCII をエスケープしません。
+フックは `[Console]::In.ReadToEnd()` で stdin を読んでいました。Windows PowerShell 5.1 はこれを
+コンソール入力コードページで復号します。一方 Claude Code は stdin へ UTF-8 の JSON を書き込み、
+`JSON.stringify` は非 ASCII をエスケープしません。コードページが UTF-8 でない環境では、
+日本語などを含むコマンドが化けて JSON が壊れ、**記録を残さないまま終了**していました。
+終了コードは0、`systemMessage` も返るため成功に見えます。Claude・Codex 両経路に影響します。
 
-合成データで確認した結果は次のとおりです。
+### 修正内容
 
-| stdin の内容 | 結果 |
-|---|---|
-| ASCII のみ（`\uXXXX` エスケープ済みを含む） | 正常に解析。`COMPLETED` |
-| 先頭に UTF-8 BOM | BOM が `・ｿ` として復号され JSON が壊れる。`INVALID_HOOK_INPUT` |
-| 非 ASCII をそのまま含む UTF-8 | 153バイトが148文字へ化け、`INVALID_HOOK_INPUT` |
+`Read-SumiGuardHookInputText` が標準入力を**バイト列として**読み、コードページを介さずに
+復号します。
 
-つまり、**コマンド文字列に日本語などの非 ASCII が含まれると、Claude Code 経路でも Codex 経路でも
-フックは記録を残さずに終了します。**
+- 復号は `UTF8Encoding($false, $true)` による厳密な UTF-8 です。
+- 先頭の UTF-8 BOM（`EF BB BF`）だけを任意で取り除きます。
+- UTF-16 などへの自動判定は行いません。UTF-16 のバイト列は「別の符号化」ではなく
+  「不正な UTF-8」として扱います。
+- 先頭以外の BOM 列は内容の一部として保持します。
+- 不正な UTF-8 を U+FFFD で補完しません。置換した1バイトが、ホストが送った本文として
+  評価・ハッシュ化されてしまうためです。固定の失敗状態
+  （`INVALID_HOOK_INPUT` / `HOOK_INPUT_NOT_UTF8`）とし、評価も保存も行いません。
+  本文・例外詳細は結果にも通知にも出さず、deny も返しません。
+- `-RawHookInputJson` による直接入力の契約は変更していません。値が渡された場合は
+  標準入力を読まず、その文字列をそのまま使います（`hook_input_decode_status=DIRECT_ARGUMENT`）。
 
-この欠陥は本変更より前から存在します。`tests/Invoke-ExecutionAdapterIntegrationTests.ps1` の
-実フック統合試験は、この原因で `master`（`c048f2d`）でも本ブランチでも同一に失敗します。
-`docs/27` が `87e6fb2` で 12/12 PASS と記録しているのは、その実行時のコンソール文字コードが
-異なっていたためと考えられます。環境依存であり、SHA に属する過去の結果を取り消すものではありません。
+### 試験で判明した計測上の落とし穴
 
-直す場合の最小案は、stdin をバイト列として読み、UTF-8 として明示的に復号し、先頭の BOM を
-取り除くことです。これは Codex 経路にも影響する共有部分の変更のため、本変更には含めていません。
-別途の承認対象とします。
+回帰試験は子プロセスへ**実バイト列**を渡します。当初 `Process.StandardInput` の `BaseStream`
+へ書いていましたが、これは正しく測れません。`Process.StandardInput` に触れた時点で
+`Console.InputEncoding` を持つ `StreamWriter` が生成され、その符号化に preamble がある場合
+（親コンソールが UTF-8 のとき）、`BaseStream` へ書いたバイトの**前に BOM が挿入される**ためです。
+その状態では「BOM なし」の事例が黙って「BOM あり」になり、「BOM あり」の事例には BOM が
+二重に届きます。
+
+このため試験は、厳密なバイト列をファイルへ書き、シェルのリダイレクトで子プロセスの標準入力に
+与えます。いずれのプロセスでもコンソール符号化を変更していません（`console_encoding_modified=false`）。
+親コンソールが `utf-8` の場合と `shift_jis` の場合の双方で 17/17 PASS を確認しており、
+結果がコードページに依存しないことを示します。
+
+### 既存試験への影響
+
+`tests/Invoke-ExecutionAdapterIntegrationTests.ps1` は、`master`（`c048f2d`）および本ブランチの
+修正前のコミットでは `Real MONITOR hook did not produce an execution identity.` で決定的に
+失敗していました（各2回実行して同一）。本修正後は **12/12 PASS** で、実フック統合の
+`real_monitor_to_adapter_metadata_only` を含みます。
+
+`docs/27` が `87e6fb2` で記録した 12/12 PASS は、その SHA における実施済みの証拠として
+そのまま保持します。当時その実行が成功した理由は確認していません。コンソールのコードページが
+当時の差異であったとは**断定しません**。確認できているのは、本修正の前は上記2点で失敗し、
+後は成功する、という事実だけです。
 
 ## 試験
+
+stdin の回帰試験 `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`（17判定）を追加しました。
+BOM なし ASCII、BOM なし日本語、BOM なし絵文字（BMP 外）、先頭 BOM、内部 BOM、不正 UTF-8、
+UTF-16、空入力、不正 JSON、直接入力を、Codex・Claude 両プロファイルで確認します。
+正常系は、記録件数が1件であることと、元のコマンド文字列から計算した UTF-8 SHA-256 が
+保存された `body_sha256` と一致することを確認します。アダプタは実物を使い、`MetadataOnly`
+経路のみを通るため本文は保存されず（`body_file_count=0`）、DPAPI にも到達しません。
 
 新規の合成試験 `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`（23判定）を追加し、
 DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず、`-TestIntentSaveOutcome TEST_SUCCESS`
@@ -191,5 +223,4 @@ DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず�
 
 - 実 Claude ホストへの接続と、フックへ到達したうえでの検証。
 - 運用ストアの使用、恒久フック登録、グローバル設定の変更、Release。
-- stdin 文字コード欠陥の修正。
-- `master` へのマージ。
+- `master` へのマージ、push、PR 作成。
