@@ -87,9 +87,9 @@ retentionログが容量上限に達した場合にこの区別が保たれる�
 | CI run [39316609193](https://github.com/ponponpon888/sumi-guard/actions/runs/39316609193) | `43f9d64`（#9） | 3ジョブPASS。12件実行／3件除外 |
 | CI run [39354719330](https://github.com/ponponpon888/sumi-guard/actions/runs/39354719330) | `8f46ad3`（#10） | 3ジョブPASS。13件実行／3件除外 |
 | `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1` 5/5 PASS | `8f46ad3` | CI・ローカル通常PowerShell 5.1の双方。CI実行対象に登録済み |
-| `tests/Invoke-ReadOnlyCliTests.ps1` 5/5 PASS | `43f9d64` | ローカル通常PowerShell 5.1のみ。**CIでは除外**（DPAPI CurrentUser依存） |
+| `tests/Invoke-ReadOnlyCliTests.ps1` 5/5 PASS | `43f9d64`（#9） | ローカル通常PowerShell 5.1のみ。**CIでは除外**（DPAPI CurrentUser依存）。下の「DPAPI依存試験の実施状況」参照 |
 | ReadOnly公開API 2関数の契約確認 | `43f9d64` | manifest、`Export-ModuleMember`、実インポート結果が一致 |
-| PR #5の通常PowerShell 12/12 PASS | `4e6ada5`（#5） | #8の統合ブランチで再実行していない |
+| `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` 12/12 PASS | `4e6ada5`（#5） | ローカル通常PowerShell 5.1.26100.9711のみ。**CIでは除外**（DPAPI CurrentUser依存）。#8以降の統合ブランチでは再実行していない。下の「DPAPI依存試験の実施状況」参照 |
 
 `#10` の容量上限テストが確認する5件は次のとおりです。
 
@@ -104,17 +104,67 @@ retentionログが容量上限に達した場合にこの区別が保たれる�
 ### CIが言えないこと
 
 CIはWindows PowerShell 5.1の構文・UTF-8 BOM、PSScriptAnalyzer、DPAPI非依存の合成試験だけを確認します。
-DPAPI CurrentUser依存の3件（`Invoke-LocalStoreTests.ps1`、`Invoke-ExecutionAdapterIntegrationTests.ps1`、
-`Invoke-ReadOnlyCliTests.ps1`）は明示的に除外されています。CIの合格から、運用ストア、実資格情報、
+DPAPI CurrentUser依存の3件は明示的に除外されています。CIの合格から、運用ストア、実資格情報、
 恒久フック、DPAPI運用境界、外部監査基準への適合は導けません。
+
+### DPAPI依存試験の実施状況
+
+CI除外の3件は「CIで検証されない」だけで、「未実施」ではありません。通常のWindows PowerShellで
+得た結果は、それを得たSHAの証拠として有効です。下表はSHAごとに実施済みと未確認を分けたものです。
+
+| 試験 | 実施済みの結果 | 証拠が属するSHA | 候補HEAD `8f46ad3` での状況 |
+|---|---|---|---|
+| `Invoke-ExecutionAdapterIntegrationTests.ps1` | **12/12 PASS**（`success=true`、`failure=null`、`test_root_cleaned=true`、通常PowerShell 5.1.26100.9711、2026-10-20） | `4e6ada5`（PR #5） | 試験ファイルは `4e6ada5` と同一（blob `ac5792b`）。ただし被試験側の `SumiGuard.ExecutionAdapter.psm1` に16MiB上限が加わっているため、HEADでの再実行は未確認 |
+| `Invoke-ReadOnlyCliTests.ps1` | **5/5 PASS**（`success=true`、`failure=null`、`test_material_removed=true`、通常PowerShell、2026-10-20） | `43f9d64`（PR #9） | 試験ファイルは `43f9d64` と同一（blob `7ec9a2d`）。被試験側に16MiB上限が加わっているため、HEADでの再実行は未確認 |
+| `Invoke-LocalStoreTests.ps1` | 候補のいずれのSHAでも実行記録なし | — | 未確認。ただし `src/SumiGuard.LocalStore/` は公開masterから無変更で、候補はこのモジュールを変更していません |
+
+この2件のPASSを「未実施」へ戻さないでください。いずれも一時領域の合成データによる試験であり、
+次のものとは別です。
+
+- **ACL初期化失敗との区別**: Codex実行環境では一時ストア初期化が `ACL_RESTRICTION_FAILED` で停止
+  しましたが、通常のWindows PowerShellでの上記実行では再現していません。環境依存の停止を試験結果の
+  失敗として扱いません。
+- **運用ストア接続との区別**: 上記はいずれも運用ストア、実資格情報、恒久フックを使っていません。
+  PASSは合成データ上の契約確認であり、運用ストアへ接続した検証の成功ではありません。この2つを
+  同じ根拠として扱わないでください。
 
 ## 進捗と未実施の範囲
 
-- **W0: 完了。** 候補上の実装と対象テスト、CIの確認が揃っています。
-- **W2: 保留。** 認証条件が成立していないため着手していません。実運用ストアや実ホスト接続の検証
-  成功として扱える証拠はありません。
-- **未実施:** 運用ストアの変更、恒久フック登録、Release作成・公開配布。認証・信頼設定の変更も
-  行っていません。
+### W0: 完了（読み取り棚卸し）
+
+W0は**読み取りだけの棚卸し**です。リポジトリとリスクを読んで現状を整理した作業であり、実装や
+運用検証の完了を意味しません。成果物は、公開masterの実装・既存テスト・設計書だけの記述・未マージ
+提案の区別と、そこから導いた強化項目の一覧です。2026-10-18の読み取り監査がこの棚卸しにあたり、
+その結果はPR #2に記録されています（PR #2自体は未マージで、この候補には含まれません）。
+
+W0の成果は「何がどこまで実装・検証されているか」の把握であり、次を含みません。
+
+- コード変更、設定変更、運用端末での動作確認。
+- 棚卸しで挙げた項目が実装済みであることの主張。
+
+この文書はW0の整理を候補（#8/#9/#10）の範囲で更新したものです。
+
+### W2: 保留（起動試行とフック未到達を区別する）
+
+W2は未着手ではありません。次の3つを区別してください。
+
+| 区分 | 状態 |
+|---|---|
+| 起動試行 | 実施済み。W2の接続を起動しようとする試行は行われました。 |
+| フック到達 | **未到達。** フックまで到達しなかったため、フックイベントも記録も生成されていません。したがってW2に帰属させられる試験結果・証跡はどのSHAにも存在しません。 |
+| 現在の保留理由 | 認証条件が未成立であること。起動試行が失敗したことではなく、この条件が揃っていないために保留を継続しています。 |
+
+「起動を試みたが到達しなかった」ことと「着手していない」ことは別です。前者が事実です。同時に、
+フックへ到達していないため、W2について成功・失敗いずれの検証結果も主張できません。実運用ストアや
+実ホスト接続の検証成功として扱える証拠はありません。
+
+なお、使い捨ての子Codexセッションでの実フック→実アダプタ接続は固定入力1件で確認済みですが、これは
+W2の運用接続ではありません。両者を同じ根拠として扱わないでください。
+
+### 未実施
+
+- 運用ストアの変更、恒久フック登録、Release作成・公開配布。
+- 認証・信頼設定の変更。
 - **非公開脆弱性報告窓口: 有効状態を確認できていません。** 確認時点でリポジトリAPIに
   `private_vulnerability_reporting` の状態は現れず、`secret_scanning` と
   `dependabot_security_updates` は `disabled` でした。有効な非公開報告窓口を案内できる状態では
@@ -133,8 +183,9 @@ DPAPI CurrentUser依存の3件（`Invoke-LocalStoreTests.ps1`、`Invoke-Executio
 
 ### 運用開始に追加で必要なもの（未達）
 
-- W2の認証条件の成立と、実ホスト接続の検証。
-- 運用端末と同じユーザー境界でのDPAPI依存3試験の実行。
+- W2の認証条件の成立と、フックへ到達したうえでの実ホスト接続の検証。
+- 運用端末と同じユーザー境界でのDPAPI依存3試験の実行。候補HEADでは3件とも未再実行です
+  （うち2件は別SHAでPASS済み。上の「DPAPI依存試験の実施状況」を参照）。
 - 運用ストアのACL、DPAPIユーザー境界、恒久フック登録、通知失敗、復旧手順を固定の合成データで確認。
 - 容量上限に達した後の運用手順（削除・ローテーションを行わない前提での運用設計）の決定。
 
@@ -156,8 +207,27 @@ base が直前のPRのブランチなので、順序を飛ばせません。下�
 | 3 | #10 → `master` | 3種NDJSONの16MiB上限、削除・切詰め・ローテーションなし、retention非原子性を公開masterの仕様として記載。`README.md` の容量上限の節 |
 | 4 | この文書PR → `master` | この文書の「公開masterには反映されていません」という前提を、実際の状態に合わせて更新 |
 
-各段階で、前段のPRのブランチが削除されると後続PRのbaseは自動的に繰り上がります。繰り上がり後の
-baseが意図どおりか、マージ前に確認してください。
+### 各段階でのbase確認（自動繰上げを前提にしない）
+
+前段をマージしたときに後続PRのbaseが `master` へ繰り上がることを**前提にしないでください。**
+GitHubは前段のブランチが削除された場合にbaseを付け替えることがありますが、ブランチを残した場合や
+設定・操作順によっては元のbaseのままになります。繰り上がったかどうかは毎回実際に確認します。
+
+各段のマージ直前に、対象PRのbaseを確認します。
+
+```powershell
+gh pr view <PR番号> --json number,baseRefName,headRefName,headRefOid
+```
+
+`baseRefName` が意図した基準（通常は `master`）でない場合は、マージせずに明示的に変更します。
+
+```powershell
+gh pr edit <PR番号> --base master
+```
+
+変更後にもう一度 `gh pr view` でbaseを読み直し、差分が意図した範囲だけかを確認してからマージします。
+baseを付け替えると表示される差分が変わるため、付け替え前の差分レビュー結果をそのまま流用しないで
+ください。
 
 ### マージ後に説明が古くなる箇所
 
@@ -180,12 +250,50 @@ baseが意図どおりか、マージ前に確認してください。
 
 - **マージ前:** 対象PRをDraftのまま閉じ、リモートブランチを削除します。`master` は変化しないため
   戻す操作は不要です。ローカルworktreeは `git worktree remove` で破棄します。
-- **マージ後:** そのマージコミットに対して `git revert -m 1 <merge-sha>` で打ち消しコミットを作り、
-  通常pushします。履歴は書き換えません。
+- **マージ後:** revertの形は実際のマージ方式で変わります。**先に親の数を確認してから**コマンドを
+  選びます（下記「マージ後のrevert手順」）。履歴は書き換えません。
 - **複数段を戻す場合:** 新しいマージから古いマージへ向かって順に revert します。`#10` → `#9` → `#8`
-  の順です。逆順にすると打ち消しが競合します。
+  の順です。逆順にすると打ち消しが競合します。各コミットについて親の数を個別に確認します。
 - revert後は、上の「マージ後に説明が古くなる箇所」を逆向きに戻す必要があります。文書が実態より
   進んだ状態で残らないようにしてください。
+
+### マージ後のrevert手順
+
+`-m` は**merge commitにだけ**必要なオプションです。squash mergeやrebase mergeの結果へ `-m` を付けると
+失敗し、merge commitへ `-m` を付け忘れても失敗します。推測せず、対象コミットの親を数えて選びます。
+
+```powershell
+# 1. 実際のマージコミットのSHAを取得する
+gh pr view <PR番号> --json mergedAt,mergeCommit --jq '.mergeCommit.oid'
+
+# 2. 親の数を数える（1行に「自身 + 親」が並ぶので、語数 - 1 が親の数）
+git rev-list --parents -n 1 <merge-sha>
+```
+
+**親が2つ以上（merge commit）の場合**、残したい側の履歴を mainline に指定します。`master` へ取り込む
+通常のマージでは第1親が `master` 側です。思い込みで `1` を渡さず、第1親が実際に `master` 上にあることを
+確認してから指定します。
+
+```powershell
+# 第1親が master 上にあるか確認する
+git merge-base --is-ancestor <merge-sha>^1 origin/master; if ($?) { '1st parent is on master' }
+
+# 確認できたら mainline に 1 を指定する
+git revert -m 1 <merge-sha>
+```
+
+第1親が `master` 側でなかった場合は、`master` 上にある親の番号（`^2` なら `-m 2`）を指定します。
+
+**親が1つの場合（squash merge / rebase merge、またはfast-forward後の単一コミット）**、mainlineは存在
+しないため `-m` を付けません。
+
+```powershell
+git revert <commit-sha>
+```
+
+参考として、確認時点で公開masterに取り込まれた過去のPR（#1、#3、#4）のマージコミットはいずれも
+親2つのmerge commitでした（例: `36e5693` は親2つで、第1親が `master` 側）。ただしこれは過去の実績で
+あり、今後のマージが同じ方式になる保証ではありません。毎回上記の手順で確認してください。
 
 ## レビューで確認した事項
 
