@@ -1,38 +1,87 @@
 # SUMI Guard
 
-## 公開状態とセキュリティ境界
+[![Windows PowerShell 5.1 CI](https://github.com/ponponpon888/sumi-guard/actions/workflows/windows-powershell-5.1-check.yml/badge.svg)](https://github.com/ponponpon888/sumi-guard/actions/workflows/windows-powershell-5.1-check.yml)
 
-SUMI Guardは、AI開発操作を対象にした**ローカル優先の監査基盤の試作**です。実行前にホストから
-渡された入力、SUMI Guardが行った評価、独立したOSプロセス観測を別々に記録し、取得できた範囲と
-相関の確度を表示します。実行前入力の取得は、コマンドが実際に実行されたことの証明ではありません。
+**Claude Code / Codex が送ったツール実行前イベントを、Windows 上でローカル監査するオープンソース試作です。**
 
-このREADMEの実装基準は、PR #8、#9、#10をマージした公開`master`コミット
-`3db6ab022548e080c04a4f568f685fe6b37f380b`です。Release tagや安定版サポート契約は定義されていません。
+[English](README.en.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
 
-PR #8はCore Privacy・security governance・CI hardeningを統合し、PR #9はReadOnly公開APIを2関数に限定、
-PR #10は3種NDJSONログの各16MiB上限を追加しました。MONITORフックの既定MetadataOnly、
-AssessmentStoreの不正ACL拒否（自動修復なし）、master限定push CIも公開masterに含まれます。
-PR #5、#6、#7の変更はPR #8経由で取り込み済みです。PR #2の署名・受領証・監査整合性は含みません。
-証拠の帰属と残課題は [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
-W2は認証条件未成立のため保留中であり、今回のマージは恒久フックや運用ストアへの接続を意味しません。
+SUMI Guard は、AI 開発ツールから渡された実行前入力、ルール評価、独立した OS プロセス観測を
+別々の証拠として記録します。MONITOR フックは実行を遮断せず、コマンド本文を保存しない
+`MetadataOnly` が既定です。
 
-`NO_DETECTION`は、対応しているルールに一致しなかったという評価結果であり、安全、無感染、完全捕捉、
-実行成功の保証ではありません。SUMI GuardはOS全体の防御、無感染判定、100%の捕捉、改ざん不能な
-証拠を提供しません。同じWindowsユーザーの別プロセス、管理者、侵害済みユーザーセッションからの
-読み取り・改変・削除を防げない点も含め、運用上の境界は`SECURITY.md`と`THREAT_MODEL.md`に記載します。
+> SUMI Guard は監査用プロトタイプです。ウイルス対策、侵入防止、実行成功の証明、100% の捕捉を
+> 提供しません。`NO_DETECTION` は「対応ルールに一致しなかった」という意味で、安全判定ではありません。
 
-### Short English summary
+## できること
 
-SUMI Guard is a local-first prototype for auditing AI development operations. Pre-execution input,
-assessment output, and OS observations are separate evidence types; a pre-execution record is not proof
-that the command ran. `NO_DETECTION` is not a safety or malware-free guarantee. The public `master` is
-the reference snapshot for this document. PRs #8, #9, and #10 have been merged, including the
-MONITOR-hook MetadataOnly default, ACL rejection, CI trigger hardening, two-function ReadOnly surface,
-and 16 MiB per-log cap. PR #2 research is excluded. W2 host-hook verification remains on hold.
+- Claude Code と Codex の `PreToolUse` 入力をプロファイル別に受け取る
+- PowerShell ソースを実行せずにルール評価する
+- 実行イベントと評価結果を分離してローカル保存する
+- MONITOR フックでは本文を既定で保存せず、SHA-256 と必要なメタデータだけを記録する
+- 本文を明示保存する場合は Windows DPAPI CurrentUser と専用 ACL を使用する
+- OS プロセス観測とアプリイベントを、証拠の強さを保ったまま照合する
 
-SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
-評価するためのローカル監視試作です。
+## 仕組み
 
+```mermaid
+flowchart TD
+    A["Claude Code / Codex"] -->|PreToolUse| B["SUMI Guard MONITOR"]
+    B --> C["AssessmentStore"]
+    B --> D["ExecutionStore"]
+    B -. 明示指定時のみ .-> E["LocalStore / DPAPI"]
+    F["OS process observation"] --> G["Evidence correlation"]
+    D --> G
+```
+
+実行前入力は「実際にコマンドが実行された証明」ではありません。対象 PID がホストイベントに
+含まれない経路では、OS 観測との対応は `DIRECT_MATCH` ではなく `INFERRED_MATCH` になります。
+
+## 実機で確認済み
+
+| Host | Environment | Verified |
+|---|---|---|
+| Claude Code | 2.1.304 / Windows PowerShell 5.1 | `PreToolUse` 到達、UTF-8 日本語・絵文字、Execution/Assessment 各1件、本文容器0件、生コマンド漏えい0件 |
+| Codex | 使い捨て子セッション / Windows | 実 `PreToolUse`、ExecutionAdapter、LocalStore、独立 OS 観測、`INFERRED_MATCH` |
+| GitHub Actions | Windows PowerShell 5.1 | 構文、文字コード、PSScriptAnalyzer、DPAPI 非依存の合成試験 |
+
+Claude Code の限定接続試験は 2026-10-20 に実施しました。フック応答は
+`evaluation=UNASSESSABLE`、`assessment_storage=SAVED`、
+`intent_storage=EVENT_SAVED_METADATA_ONLY` で、MONITOR として実行を継続しました。
+詳しい条件と証拠は [docs/28](docs/28-claude-code-hook-compatibility.md) を参照してください。
+
+## 3分デモ
+
+Windows PowerShell 5.1 で、固定の無害な入力だけを使う隔離デモです。
+
+```powershell
+git clone https://github.com/ponponpon888/sumi-guard.git
+Set-Location .\sumi-guard
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\demo\Start-SumiGuardDemo.ps1
+
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\demo\Show-SumiGuardDemo.ps1
+
+# 確認後、明示的にデモデータを清掃
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\demo\Clear-SumiGuardDemo.ps1 -ConfirmDemoRemoval
+```
+
+デモは `.demo-data` だけを使用し、Git 管理対象や通常運用ストアへ書き込みません。開始前に
+[demo/README.md](demo/README.md) の隔離条件を確認してください。
+
+## セキュリティ境界
+
+- 既定は MONITOR であり、自動 deny や自動遮断を行いません。
+- 同じ Windows ユーザー、管理者、侵害済みセッションからの読取り・改変・削除は防げません。
+- OS 観測はポーリング方式のため、短命プロセスを取り逃す可能性があります。
+- 実データや認証情報を含む Issue を公開しないでください。
+
+詳細は [SECURITY.md](SECURITY.md) と [THREAT_MODEL.md](THREAT_MODEL.md) にあります。
+
+---
 ## 現在の状態
 
 現在は、無害な固定入力だけで検証した監視試作です。通常実行、後続標準入力、MONITORモードでの
@@ -42,6 +91,10 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 別の固定入力1件では、実際のCodex `PreToolUse` からExecutionAdapterとLocalStoreへ接続し、本文の
 暗号化保存、明示復号、独立したOS観測、別イベントの実行結果までを `INFERRED_MATCH` で確認しました。
 これは使い捨て子Codexセッションだけの接続試験であり、通常運用への接続ではありません。
+
+2026-10-20 には Claude Code 2.1.304 のプロジェクトローカル `PreToolUse` から限定接続し、
+Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、ExecutionStore と AssessmentStore への
+メタデータ保存、本文非保存を確認しました。運用ストア、恒久フック、グローバル設定は使用していません。
 
 次の制約があります。
 
@@ -60,6 +113,9 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `tests/Invoke-LocalStoreTests.ps1`: ローカル保存モジュールの単体試験
 - `tests/Invoke-ExecutionAdapterIntegrationTests.ps1`: 合成イベントだけを使う接続統合試験
 - `hooks/Invoke-SumiGuardMonitorHook.ps1`: Codex PreToolUse を保存前に評価し、評価結果だけを別保存する運用フック（MONITOR、denyしない）
+- `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`: Claude Code プロファイル、識別子、origin、経路宣言の合成試験
+- `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`: Codex / Claude 両プロファイルの厳密な UTF-8 stdin 回帰試験
+- `docs/28-claude-code-hook-compatibility.md`: Claude Code 互換性、登録条件、実ホスト接続試験の記録
 - `tests/Invoke-MonitorHookSyntheticTests.ps1`: 運用フックの合成試験。固定文字列だけを渡し、本文保存の実経路は置き換える
 - `tools/Show-SumiGuardRecords.ps1`: 本文を復号しない保存済み記録の読み取り専用CLI
 - `src/SumiGuard.ExecutionAdapter/SumiGuard.ExecutionAdapter.ReadOnly.psm1`: 既存ロックを共有読取りで開くReadOnly派生モジュール
