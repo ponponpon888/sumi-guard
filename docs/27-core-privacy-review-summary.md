@@ -5,18 +5,19 @@
 PR #8、#9、#10を一体として最終確認するための読み取りベースのレビュー要約です。マージ判断に必要な
 事実、証拠が属するSHA、未実施の範囲、戻し方を1か所に集約します。
 
-この文書自体はmasterへのマージを前提にしていません。確認時点で、**公開masterにはPR #8、#9、#10の
-いずれも反映されていません**。以下で「候補」と書いた動作は、未マージブランチ上でのみ確認できる
-動作であり、公開masterの既定動作ではありません。
+2026-10-20、PR #8、#9、#10をこの順でmasterへマージしました。
+実装基準は `3db6ab022548e080c04a4f568f685fe6b37f380b` です。
+以下の「候補」はマージ前の検証スナップショットを指します。その製品コードとテストはmasterへ取り込み済みです。
+本PR #11は文書のみの更新で、W2実施・運用開始・Releaseを意味しません。
 
 ## 対象SHAとPR依存関係
 
-公開masterの基準コミットは `36e56934d26fdc7ce2296ef39a6c50113dc405b8` です。候補は次の順に積まれて
-います。各PRのbaseは直前のPRのブランチであり、独立した並列PRではありません。
+マージ前の公開master基準は `36e56934d26fdc7ce2296ef39a6c50113dc405b8` でした。
+以下は当初のPR依存関係です。#9、#10、#11のbaseは各マージ前にmasterへ明示変更しました。
 
 | 段階 | PR | ブランチ | head SHA | base |
 |---|---|---|---|---|
-| 公開済み | — | `master` | `36e56934d26fdc7ce2296ef39a6c50113dc405b8` | — |
+| マージ前基準 | — | `master` | `36e56934d26fdc7ce2296ef39a6c50113dc405b8` | — |
 | 1 | [#8](https://github.com/ponponpon888/sumi-guard/pull/8) | `integration/core-privacy-governance-ci` | `8ae5b98` | `master` |
 | 2 | [#9](https://github.com/ponponpon888/sumi-guard/pull/9) | `security/readonly-api-surface` | `43f9d64` | `integration/core-privacy-governance-ci` |
 | 3 | [#10](https://github.com/ponponpon888/sumi-guard/pull/10) | `security/metadata-log-limits` | `8f46ad3` | `security/readonly-api-surface` |
@@ -26,11 +27,11 @@ PR #8、#9、#10を一体として最終確認するための読み取りベー�
 （security governance）、#7（CI hardening）を取り込んだ統合候補であり、個別PRと#8を重複して
 マージしない方針です。
 
-`master` から候補HEADまでの差分は17ファイル、1,406挿入、31削除です。ローカルの `master` ref が
+マージ前のmaster基準から製品候補 `8f46ad3` までの差分は17ファイル、1,406挿入、31削除でした。ローカルの `master` ref が
 `origin/master` より古い場合、`git diff master..HEAD` は候補の変更量を過大に表示します。比較は
-`origin/master`（`36e5693`）を基準にしてください。
+対象の基準SHAを明示してください。現在の `origin/master` はマージに伴って進んでいます。
 
-## 候補に含まれる動作
+## masterへ取り込まれた動作
 
 ### 既定MetadataOnlyの適用範囲
 
@@ -72,7 +73,7 @@ retentionログへtombstoneを書けなかった場合、
 - `retention_tombstone_failure_count` に失敗件数が残ります。
 - 以降その記録の参照状態は `REFERENCE_MISSING` になり得ます。
 
-**これは候補が追加した制限ではありません。** `RETENTION_CLEANUP_PARTIAL`、`REFERENCE_MISSING`、
+**これは今回追加した制限ではありません。** `RETENTION_CLEANUP_PARTIAL`、`REFERENCE_MISSING`、
 `retention_tombstone_failure_count` はいずれも公開masterに既に存在します。候補が追加したのは、
 retentionログが容量上限に達した場合にこの区別が保たれることの検証（`#10`）であり、原子性そのものの
 改善ではありません。
@@ -89,7 +90,7 @@ retentionログが容量上限に達した場合にこの区別が保たれる�
 | `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1` 5/5 PASS | `8f46ad3` | CI・ローカル通常PowerShell 5.1の双方。CI実行対象に登録済み |
 | `tests/Invoke-ReadOnlyCliTests.ps1` 5/5 PASS | `43f9d64`（#9） | ローカル通常PowerShell 5.1のみ。**CIでは除外**（DPAPI CurrentUser依存）。下の「DPAPI依存試験の実施状況」参照 |
 | ReadOnly公開API 2関数の契約確認 | `43f9d64` | manifest、`Export-ModuleMember`、実インポート結果が一致 |
-| `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` 12/12 PASS | `4e6ada5`（#5） | ローカル通常PowerShell 5.1.26100.9711のみ。**CIでは除外**（DPAPI CurrentUser依存）。#8以降の統合ブランチでは再実行していない。下の「DPAPI依存試験の実施状況」参照 |
+| `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` 12/12 PASS | `4e6ada5`（#5） | ローカル通常PowerShell 5.1.26100.9711のみ。**CIでは除外**（DPAPI CurrentUser依存）。後述の `87e6fb2` でも12/12 PASSを追加確認。下の「DPAPI依存試験の実施状況」参照 |
 
 `#10` の容量上限テストが確認する5件は次のとおりです。
 
@@ -107,7 +108,7 @@ CIはWindows PowerShell 5.1の構文・UTF-8 BOM、PSScriptAnalyzer、DPAPI非�
 DPAPI CurrentUser依存の3件は明示的に除外されています。CIの合格から、運用ストア、実資格情報、
 恒久フック、DPAPI運用境界、外部監査基準への適合は導けません。
 
-### DPAPI依存試験の実施状況
+### DPAPI依存試験の実施状況（追加実行前の履歴）
 
 CI除外の3件は「CIで検証されない」だけで、「未実施」ではありません。通常のWindows PowerShellで
 得た結果は、それを得たSHAの証拠として有効です。下表はSHAごとに実施済みと未確認を分けたものです。
@@ -127,6 +128,22 @@ CI除外の3件は「CIで検証されない」だけで、「未実施」では
 - **運用ストア接続との区別**: 上記はいずれも運用ストア、実資格情報、恒久フックを使っていません。
   PASSは合成データ上の契約確認であり、運用ストアへ接続した検証の成功ではありません。この2つを
   同じ根拠として扱わないでください。
+
+### 最新候補での追加実行（2026-10-20）
+
+ユーザー提示の通常Windows PowerShell実行結果により、`87e6fb29e9747a5dab937fbbd577eb9775938bf0`
+でDPAPI依存3試験の計23/23 PASSを確認しました。ExecutionAdapter実行前にHEAD一致とcleanを確認し、
+以後は同worktreeの絶対パスで実行しています。この間、変更操作は報告されていません。
+
+| 試験 | 結果 | 確認 |
+|---|---|---|
+| `Invoke-ExecutionAdapterIntegrationTests.ps1` | 12/12 PASS | MetadataOnly本文0件、ハッシュ一致、denyなし、子プロセス回収、一時領域清掃 |
+| `Invoke-ReadOnlyCliTests.ps1` | 5/5 PASS | 公開2関数、ファイル不変、復号なし、平文非包含、lock新規作成なし、一時領域清掃 |
+| `Invoke-LocalStoreTests.ps1` | 6/6 PASS | DPAPI往復とACL、平文フォールバックなし、容量境界・同時追記、削除範囲、一時領域清掃 |
+
+各出力は `success=true`、`failure=null` です。ExecutionAdapterとLocalStoreの出力のPowerShellは
+`5.1.26100.9711` です。過去のSHAに属する結果を置き換えず、追加の証拠として記録します。
+合成データ・一時ストアの検証であり、W2のホスト接続や運用ストアでの検証成功ではありません。
 
 ## 進捗と未実施の範囲
 
@@ -188,8 +205,7 @@ Codexホストからのフック発火を確認するW2とは別であり、W2�
 ### 運用開始に追加で必要なもの（未達）
 
 - W2の認証条件の成立と、フックへ到達したうえでの実ホスト接続の検証。
-- 運用端末と同じユーザー境界でのDPAPI依存3試験の実行。候補HEADでは3件とも未再実行です
-  （うち2件は別SHAでPASS済み。上の「DPAPI依存試験の実施状況」を参照）。
+- DPAPI依存3試験は通常PowerShellの合成ストアで23/23 PASS。実運用のユーザー境界・保存先については別途確認が必要です。
 - 運用ストアのACL、DPAPIユーザー境界、恒久フック登録、通知失敗、復旧手順を固定の合成データで確認。
 - 容量上限に達した後の運用手順（削除・ローテーションを行わない前提での運用設計）の決定。
 
@@ -200,53 +216,21 @@ Codexホストからのフック発火を確認するW2とは別であり、W2�
 - 外部監査基準を主張する場合は、署名・鍵管理・失効・受領証・改ざん不能な外部保管の設計と実装。
   いずれも候補に含まれていません。
 
-## マージする場合の順序と、各段階で更新する文書
+## マージ記録と文書の同期
 
-base が直前のPRのブランチなので、順序を飛ばせません。下から順にマージします。
-
-| 順 | 対象 | マージ後に更新する文書 |
+| PR | マージ前head | masterのマージコミット |
 |---|---|---|
-| 1 | #8 → `master` | 4文書のmaster基準SHA。#5/#6/#7を「未マージ」から「公開済み」へ移動。`integration/core-privacy-governance-ci` を候補として説明している箇所 |
-| 2 | #9 → `master` | ReadOnly公開API2件を公開masterの仕様として記載。`THREAT_MODEL.md` のReadOnly行 |
-| 3 | #10 → `master` | 3種NDJSONの16MiB上限、削除・切詰め・ローテーションなし、retention非原子性を公開masterの仕様として記載。`README.md` の容量上限の節 |
-| 4 | この文書PR → `master` | この文書の「公開masterには反映されていません」という前提を、実際の状態に合わせて更新 |
+| #8 | `8ae5b98` | `4b2915c500a5058572836a9e7f826206a7ac81a8` |
+| #9 | `43f9d64` | `e2353f442cb18169fdfec376d6e9a1b93904685b` |
+| #10 | `8f46ad3` | `3db6ab022548e080c04a4f568f685fe6b37f380b` |
 
-### 各段階でのbase確認（自動繰上げを前提にしない）
+すべてmerge方式で元コミット履歴を保持しました。#9と#10はbaseをmasterへ変更後、元の4ファイルだけが
+差分に残ることを確認しました。本PR #11もbaseをmasterへ変更し、5文書だけを更新します。
+README、SECURITY、THREAT_MODEL、CONTRIBUTINGの「master未反映」という説明を実態に合わせて直しました。
+PR #5/#6/#7の変更は#8経由で取り込み済みで、個別PRを重複してマージしません。
+PR #2の残りは含めていません。`docs/27` の番号整理が将来必要になる点は引き続き残ります。
 
-前段をマージしたときに後続PRのbaseが `master` へ繰り上がることを**前提にしないでください。**
-GitHubは前段のブランチが削除された場合にbaseを付け替えることがありますが、ブランチを残した場合や
-設定・操作順によっては元のbaseのままになります。繰り上がったかどうかは毎回実際に確認します。
-
-各段のマージ直前に、対象PRのbaseを確認します。
-
-```powershell
-gh pr view <PR番号> --json number,baseRefName,headRefName,headRefOid
-```
-
-`baseRefName` が意図した基準（通常は `master`）でない場合は、マージせずに明示的に変更します。
-
-```powershell
-gh pr edit <PR番号> --base master
-```
-
-変更後にもう一度 `gh pr view` でbaseを読み直し、差分が意図した範囲だけかを確認してからマージします。
-baseを付け替えると表示される差分が変わるため、付け替え前の差分レビュー結果をそのまま流用しないで
-ください。
-
-### マージ後に説明が古くなる箇所
-
-マージすると次の記述が事実と合わなくなります。マージと同じ段階で直してください。
-
-- `README.md`、`SECURITY.md`、`THREAT_MODEL.md` が参照する公開master SHA
-  `36e56934d26fdc7ce2296ef39a6c50113dc405b8`。
-- 4文書にある「PR #2、#5、#6、#7、#8、#9、#10はDraft・未マージ」という一覧。
-- `README.md`・`CONTRIBUTING.md`・`THREAT_MODEL.md` の「統合検証候補」「候補の動作であり公開masterの
-  既定動作ではない」という条件付けの文。
-- `THREAT_MODEL.md` の「PR #5の既定MetadataOnlyは未マージ」という残余リスク欄。
-- この文書の冒頭と「対象SHAとPR依存関係」の表。
-- PR #2が先にマージされた場合、`docs/27` の番号がPR #2の `docs/27-security-hardening-20261018.md`
-  と重複します。どちらかを採番し直してください。この候補にPR #2は含まれていないため、本文書は
-  この候補での次番として `27` を使っています。
+今後もbaseの自動繰上げを前提にせず、マージ直前に `baseRefName`・head・差分を読み直してください。
 
 ## 元へ戻す方法
 
@@ -263,43 +247,15 @@ baseを付け替えると表示される差分が変わるため、付け替え�
 
 ### マージ後のrevert手順
 
-`-m` は**merge commitにだけ**必要なオプションです。squash mergeやrebase mergeの結果へ `-m` を付けると
-失敗し、merge commitへ `-m` を付け忘れても失敗します。推測せず、対象コミットの親を数えて選びます。
+今回の#8、#9、#10はmerge方式です。戻す場合は対象のマージコミットと、マージ直前のmasterを表す
+第1親をGitHubのマージ記録およびコミットの親一覧で照合してから `git revert -m 1 <merge-sha>` を使います。
+現在のmasterの祖先かどうかだけでは親の役割を判定できません（両方の親が祖先になり得ます）。
+revertはここでは実行していません。
 
-```powershell
-# 1. 実際のマージコミットのSHAを取得する
-gh pr view <PR番号> --json mergedAt,mergeCommit --jq '.mergeCommit.oid'
+将来squash方式を使う場合は単一のsquashコミットを、rebase方式ならmasterへ追加された対応コミット群を
+特定して新しい順に戻します。単一親という理由だけでPR末尾の1コミットを戻せば全変更が取り消せるとは扱いません。
 
-# 2. 親の数を数える（1行に「自身 + 親」が並ぶので、語数 - 1 が親の数）
-git rev-list --parents -n 1 <merge-sha>
-```
-
-**親が2つ以上（merge commit）の場合**、残したい側の履歴を mainline に指定します。`master` へ取り込む
-通常のマージでは第1親が `master` 側です。思い込みで `1` を渡さず、第1親が実際に `master` 上にあることを
-確認してから指定します。
-
-```powershell
-# 第1親が master 上にあるか確認する
-git merge-base --is-ancestor <merge-sha>^1 origin/master; if ($?) { '1st parent is on master' }
-
-# 確認できたら mainline に 1 を指定する
-git revert -m 1 <merge-sha>
-```
-
-第1親が `master` 側でなかった場合は、`master` 上にある親の番号（`^2` なら `-m 2`）を指定します。
-
-**親が1つの場合（squash merge / rebase merge、またはfast-forward後の単一コミット）**、mainlineは存在
-しないため `-m` を付けません。
-
-```powershell
-git revert <commit-sha>
-```
-
-参考として、確認時点で公開masterに取り込まれた過去のPR（#1、#3、#4）のマージコミットはいずれも
-親2つのmerge commitでした（例: `36e5693` は親2つで、第1親が `master` 側）。ただしこれは過去の実績で
-あり、今後のマージが同じ方式になる保証ではありません。毎回上記の手順で確認してください。
-
-## レビューで確認した事項
+## マージ前のレビューで確認した事項（履歴）
 
 | 確認項目 | 結果 |
 |---|---|

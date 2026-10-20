@@ -6,21 +6,15 @@ SUMI Guardは、AI開発操作を対象にした**ローカル優先の監査基
 渡された入力、SUMI Guardが行った評価、独立したOSプロセス観測を別々に記録し、取得できた範囲と
 相関の確度を表示します。実行前入力の取得は、コマンドが実際に実行されたことの証明ではありません。
 
-このREADMEの公開コードは`master`の確認済みコミット
-`36e56934d26fdc7ce2296ef39a6c50113dc405b8`を対象にしています。Release tagや安定版サポート契約は
-定義されていません。PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、
-[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)、
-[#8](https://github.com/ponponpon888/sumi-guard/pull/8)、[#9](https://github.com/ponponpon888/sumi-guard/pull/9)、
-[#10](https://github.com/ponponpon888/sumi-guard/pull/10)は、
-この確認時点でDraft・未マージです。したがって、公開masterのインストール手順や既定動作には含めません。
+このREADMEの実装基準は、PR #8、#9、#10をマージした公開`master`コミット
+`3db6ab022548e080c04a4f568f685fe6b37f380b`です。Release tagや安定版サポート契約は定義されていません。
 
-別worktreeの統合候補は、上記確認済みmasterへPR #8 → #9 → #10を順に積んだ検証用スナップショットです。
-PR #8がPR #5、#6、#7を取り込み、PR #9がReadOnly公開APIを2関数へ限定し、PR #10がメタデータログの
-16MiB上限を追加します。この候補では、Core PrivacyとしてMONITORフックの既定`MetadataOnly`（本文保存は
-明示指定時だけ）、AssessmentStoreの不正ACL拒否（自動修復なし）、CIの`push`をmasterだけにする条件、
-ReadOnly公開API2件、3種NDJSONログの各16MiB上限を確認できます。これらは統合候補の動作であり、
-公開masterの既定動作ではありません。候補の対象SHA、証拠の帰属、マージ順序、戻し方は
-[docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) にまとめています。
+PR #8はCore Privacy・security governance・CI hardeningを統合し、PR #9はReadOnly公開APIを2関数に限定、
+PR #10は3種NDJSONログの各16MiB上限を追加しました。MONITORフックの既定MetadataOnly、
+AssessmentStoreの不正ACL拒否（自動修復なし）、master限定push CIも公開masterに含まれます。
+PR #5、#6、#7の変更はPR #8経由で取り込み済みです。PR #2の署名・受領証・監査整合性は含みません。
+証拠の帰属と残課題は [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
+W2は認証条件未成立のため保留中であり、今回のマージは恒久フックや運用ストアへの接続を意味しません。
 
 `NO_DETECTION`は、対応しているルールに一致しなかったという評価結果であり、安全、無感染、完全捕捉、
 実行成功の保証ではありません。SUMI GuardはOS全体の防御、無感染判定、100%の捕捉、改ざん不能な
@@ -32,10 +26,9 @@ ReadOnly公開API2件、3種NDJSONログの各16MiB上限を確認できます�
 SUMI Guard is a local-first prototype for auditing AI development operations. Pre-execution input,
 assessment output, and OS observations are separate evidence types; a pre-execution record is not proof
 that the command ran. `NO_DETECTION` is not a safety or malware-free guarantee. The public `master` is
-the reference snapshot for this document. Draft PRs #2, #5, #6, #7, #8, #9, and #10 are not part of the
-public master behavior. The separate integration candidate stacks #8, #9, and #10 for review only; its
-MONITOR-hook MetadataOnly default, ACL rejection, trigger conditions, two-function ReadOnly surface, and
-16 MiB per-log cap are not public-master defaults.
+the reference snapshot for this document. PRs #8, #9, and #10 have been merged, including the
+MONITOR-hook MetadataOnly default, ACL rejection, CI trigger hardening, two-function ReadOnly surface,
+and 16 MiB per-log cap. PR #2 research is excluded. W2 host-hook verification remains on hold.
 
 SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
 評価するためのローカル監視試作です。
@@ -70,11 +63,11 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `tests/Invoke-MonitorHookSyntheticTests.ps1`: 運用フックの合成試験。固定文字列だけを渡し、本文保存の実経路は置き換える
 - `tools/Show-SumiGuardRecords.ps1`: 本文を復号しない保存済み記録の読み取り専用CLI
 - `src/SumiGuard.ExecutionAdapter/SumiGuard.ExecutionAdapter.ReadOnly.psm1`: 既存ロックを共有読取りで開くReadOnly派生モジュール
-- `src/SumiGuard.ExecutionAdapter/SumiGuard.ExecutionAdapter.ReadOnly.psd1`: ReadOnly派生モジュールの公開関数を読取り用2件に限定するmanifest（統合候補）
+- `src/SumiGuard.ExecutionAdapter/SumiGuard.ExecutionAdapter.ReadOnly.psd1`: ReadOnly派生モジュールの公開関数を読取り用2件に限定するmanifest
 - `tools/Show-SumiGuardRecords.ReadOnly.ps1`: ReadOnly派生モジュールを明示使用するCLI
 - `demo/Show-SumiGuardDemo.ReadOnly.ps1`: ReadOnly CLIを使うデモ表示
 - `tests/Invoke-ReadOnlyCliTests.ps1`: 読み取り専用CLIの合成データ試験
-- `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1`: メタデータログ16MiB上限の境界・同時追記・失敗通知満杯・retention途中失敗の合成試験（統合候補）
+- `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1`: メタデータログ16MiB上限の境界・同時追記・失敗通知満杯・retention途中失敗の合成試験
 - `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1`: 無害な子プロセス8ケースで、出力の捕捉・JSON読取り・事後照合の分岐と理由を判定する合成試験
 - `docs/19-sumi-guard-execution-audit.md`: 設計書
 - `docs/20-local-store.md`: 保存形式、容量、保持、制約
@@ -87,7 +80,7 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
-- `docs/27-core-privacy-review-summary.md`: PR #8/#9/#10統合候補のレビュー要約。対象SHA、証拠の帰属、マージ順序、戻し方
+- `docs/27-core-privacy-review-summary.md`: PR #8/#9/#10の統合レビューとマージ記録。対象SHA、証拠の帰属、戻し方
 - `SECURITY.md`: 脆弱性報告の窓口、対象範囲、秘密情報を含めない報告方法
 - `THREAT_MODEL.md`: 保護対象、境界、脅威ごとの制御・試験・残余リスク
 - `CONTRIBUTING.md`: 小さな変更、合成データ、隔離検証の開発規約
@@ -148,14 +141,14 @@ LocalStoreの本文参照だけを平文メタデータへ保存します。本�
 イベントを書き、容量超過や暗号化失敗でもMONITOR動作を継続して `COLLECTION_FAILED` を記録します。通常の一覧APIは
 本文を返さず、`Read-SumiGuardExecutionBody` を明示的に呼び出した場合だけ復号します。
 
-統合候補の既定`MetadataOnly`は**MONITORフックに適用されます**。フックは`-CaptureCommandBody`（既定off）
+公開masterの既定`MetadataOnly`は**MONITORフックに適用されます**。フックは`-CaptureCommandBody`（既定off）
 を指定しない限り本文を保存せず、ハッシュと必要なメタデータだけを記録します。
 
 **直接アダプタ呼出しの契約は別です。** `Save-SumiGuardExecutionIntent`の`-MetadataOnly`は既定offの
 スイッチのままで、直接呼び出した場合は従来どおり本文保存経路に入ります。この2つを同じ既定として
 扱わないでください。
 
-統合候補では、`events.ndjson`、`failures.ndjson`、`retention.ndjson`の3種類それぞれに16MiBの上限が
+公開masterでは、`events.ndjson`、`failures.ndjson`、`retention.ndjson`の3種類それぞれに16MiBの上限が
 あります。判定は既存の書込みロック内で、UTF-8バイト数と改行を含めた追記後サイズに対して行い、上限
 ちょうどは許可、超過は追記前に拒否します。拒否時に対象ファイルのサイズと内容は変わりません。
 **容量超過で削除、切詰め、自動ローテーションは行いません。** 上限に達したログは記録失敗を返し続け、
@@ -194,7 +187,7 @@ LocalStoreの本文参照だけを平文メタデータへ保存します。本�
 公開APIがロックファイルを新規作成する動作を持つため、まだロックがない空ストアではファイルを
 作成しない読取専用フォールバックを使います。詳細は `docs/22-read-only-cli.md` を参照してください。
 
-統合候補のReadOnly派生版は、公開関数を`Get-SumiGuardExecutionRecord`と
+公開masterのReadOnly派生版は、公開関数を`Get-SumiGuardExecutionRecord`と
 `Get-SumiGuardCollectionFailureNotice`の2件に限定します。作成・書込み・削除・保持期限清掃・本文復号は
 公開一覧から除外します。これは公開一覧の制限であり、内部関数の実行不能やOS権限境界を主張するもの
 ではありません。

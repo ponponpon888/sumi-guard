@@ -9,18 +9,18 @@ SUMI Guardは、AI開発操作の実行前入力、評価、OS観測を分離し
 - `NO_DETECTION`、評価完了、実行前記録を安全・実行成功・実行済みの証拠として説明しない。
 - 署名、受領証、Audit Integrity、容量上限、ReadOnly、CI設定などを追加する場合は、既存の状態定義と別の設計・試験を先に用意する。
 
-## 統合検証候補
+## 取り込み済みの変更
 
-候補は確認済みmasterへ次の順で積まれています。baseが直前のPRのブランチなので、順序を飛ばせません。
+2026-10-20にPR #8 → #9 → #10の順でmasterへマージしました。
 
-1. `integration/core-privacy-governance-ci`（PR #8）: PR #5（Core Privacy）、#6（security governance）、#7（CI hardening）を順に取り込んだ統合ブランチ。
-2. `security/readonly-api-surface`（PR #9）: ReadOnly派生モジュールの公開APIを読取り用2関数へ限定。
-3. `security/metadata-log-limits`（PR #10）: 3種NDJSONログの各16MiB上限。削除・切詰め・自動ローテーションは追加しない。
+1. PR #8: PR #5（Core Privacy）、#6（security governance）、#7（CI hardening）の統合。
+2. PR #9: ReadOnly派生モジュールの公開APIを読取り用2関数へ限定。
+3. PR #10: 3種NDJSONログの各16MiB上限。容量超過による削除・切詰め・自動ローテーションなし。
 
-ここで確認できるMetadataOnly、ACL拒否、CIトリガー条件、ReadOnly公開API2件、容量上限は公開masterの既定動作ではありません。
-既定MetadataOnlyはMONITORフックに適用され、直接アダプタ呼出しの本文保存契約とは区別します。個別PRと統合PRを重複してマージせず、
-統合候補の結果を確認してから次の判断を行ってください。対象SHA、証拠が属するSHA、マージ順序、戻し方は
+既定MetadataOnlyはMONITORフックに適用され、直接アダプタ呼出しの本文保存契約とは区別します。
+個別PRと統合PRを重複してマージしないでください。証拠が属するSHA、マージ記録、戻し方は
 [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
+W2は認証条件未成立のため保留中です。以下の隔離条件を維持してください。
 
 ## データと隔離
 

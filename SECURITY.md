@@ -3,23 +3,23 @@
 ## 対象範囲と現在の状態
 
 この文書の対象は、公開リポジトリ `ponponpon888/sumi-guard` の確認済み
-`master`コミット `36e56934d26fdc7ce2296ef39a6c50113dc405b8` です。
+`master`コミット `3db6ab022548e080c04a4f568f685fe6b37f380b` です。
 
 - Release tag、安定版番号、長期サポート契約は確認できません。
 - 実装・検証対象のホストは Windows PowerShell 5.1 です。既存workflowは5.1の構文、UTF-8 BOM、PSScriptAnalyzer、DPAPIに依存しない合成試験を確認します。
 - `SumiGuard.LocalStore` は Windows DPAPI `CurrentUser` とWindows ACLに依存します。DPAPI依存試験はGitHub CIでは実行されず、運用端末と同じユーザー境界で別途確認が必要です。
-- PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)、[#8](https://github.com/ponponpon888/sumi-guard/pull/8)、[#9](https://github.com/ponponpon888/sumi-guard/pull/9)、[#10](https://github.com/ponponpon888/sumi-guard/pull/10) は確認時点でDraft・未マージです。そこで提案される既定MetadataOnly、ACL拒否、CIトリガー変更、ReadOnly公開APIの限定、メタデータログの容量上限、署名、監査整合性などを、公開masterの機能や運用手順として扱いません。
+- PR #8、#9、#10はmasterへマージ済みです。PR #5、#6、#7の変更はPR #8経由で取り込み済みです。PR #2の署名・受領証・監査整合性は含みません。
 
-統合検証用の別worktreeには、確認済みmasterへPR #8 → #9 → #10を順に積んだ候補があります。候補上では次を確認できますが、いずれも公開masterに未反映です。公開masterの基準SHAは上記の `36e56934d26fdc7ce2296ef39a6c50113dc405b8` であり、統合候補のHEADとは別です。
+公開masterでは次の制御を実装しています。これはRelease、恒久フック登録、実運用接続の完了を意味しません。
 
 - MONITORフックの既定MetadataOnly（本文保存は `-CaptureCommandBody` の明示指定時だけ）。直接アダプタ呼出し `Save-SumiGuardExecutionIntent` の `-MetadataOnly` は既定offのままで、従来の本文保存契約が適用されます。この2つを同じ既定として扱いません。
 - AssessmentStoreの不正ACL拒否（自動修復なし）、CIの`push`をmasterだけにする条件。
 - ReadOnly派生モジュールの公開関数を読取り用2件（`Get-SumiGuardExecutionRecord`、`Get-SumiGuardCollectionFailureNotice`）へ限定。公開一覧の制限であり、内部関数の実行不能やOS権限境界を主張するものではありません。
 - `events.ndjson`、`failures.ndjson`、`retention.ndjson` の3種類それぞれに16MiBの上限。上限ちょうどは許可、超過は追記前に拒否し、容量超過で削除・切詰め・自動ローテーションは行いません。上限到達後は記録失敗を返し続け、暗黙の成功へ格下げしません。
 
-保持期間清掃の本文削除とtombstone記録が原子的でないことは、候補で追加した制限ではなく公開masterの既存の性質です。本文削除後にtombstoneを書けない場合は `RETENTION_CLEANUP_PARTIAL` となり、参照状態は `REFERENCE_MISSING` になり得ます。候補が追加したのは、retentionログが容量上限に達した場合にこの区別が保たれることの検証であり、原子性そのものの改善ではありません。
+保持期間清掃の本文削除とtombstone記録が原子的でないことは、今回追加した制限ではなく公開masterの既存の性質です。本文削除後にtombstoneを書けない場合は `RETENTION_CLEANUP_PARTIAL` となり、参照状態は `REFERENCE_MISSING` になり得ます。PR #10が追加したのは、retentionログが容量上限に達した場合にこの区別が保たれることの検証であり、原子性そのものの改善ではありません。
 
-候補の対象SHA、証拠が属するSHA、マージ順序、戻し方は [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
+実装の対象SHA、証拠が属するSHA、マージ記録、戻し方は [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
 
 SUMI Guardはローカル優先の監査試作です。実行前入力、評価結果、OS観測は別の証拠です。実行前入力の記録は実行済みの証明ではなく、`NO_DETECTION` は安全・無感染・完全捕捉の保証ではありません。
 
