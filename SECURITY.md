@@ -1,0 +1,42 @@
+# SUMI Guard Security
+
+## 対象範囲と現在の状態
+
+この文書の対象は、公開リポジトリ `ponponpon888/sumi-guard` の確認済み
+`master`コミット `36e56934d26fdc7ce2296ef39a6c50113dc405b8` です。
+
+- Release tag、安定版番号、長期サポート契約は確認できません。
+- 実装・検証対象のホストは Windows PowerShell 5.1 です。既存workflowは5.1の構文、UTF-8 BOM、PSScriptAnalyzer、DPAPIに依存しない合成試験を確認します。
+- `SumiGuard.LocalStore` は Windows DPAPI `CurrentUser` とWindows ACLに依存します。DPAPI依存試験はGitHub CIでは実行されず、運用端末と同じユーザー境界で別途確認が必要です。
+- PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7) は確認時点でDraft・未マージです。そこで提案される既定MetadataOnly、ACL拒否、CIトリガー変更、署名、監査整合性、容量上限の追加整理などを、公開masterの機能や運用手順として扱いません。
+
+統合検証用の別worktree `integration/core-privacy-governance-ci` には、PR #5、#6、#7を順に取り込んだ候補があります。候補上ではMONITORの既定MetadataOnly、AssessmentStoreの不正ACL拒否（自動修復なし）、CIの`push`をmasterだけにする条件を確認できますが、これは公開masterに未反映です。公開masterの基準SHAは上記の `36e56934d26fdc7ce2296ef39a6c50113dc405b8` であり、統合候補のHEADとは別です。
+
+SUMI Guardはローカル優先の監査試作です。実行前入力、評価結果、OS観測は別の証拠です。実行前入力の記録は実行済みの証明ではなく、`NO_DETECTION` は安全・無感染・完全捕捉の保証ではありません。
+
+## 脆弱性の報告窓口
+
+確認時点で、GitHub APIのリポジトリ設定に `private_vulnerability_reporting` の有効状態は表示されませんでした。GitHubのprivate vulnerability reportingが有効であること、または別の非公開報告窓口が提供されていることを確認できないため、**現在、有効な非公開報告窓口は本リポジトリから案内できません**。
+
+この文書はメールアドレス、応答期限、修正期限、サポート保証を新たに設定するものではありません。非公開窓口が有効化・明示された場合は、実際の設定と導線を確認したうえでこの文書を更新します。
+
+### 報告時の禁止事項
+
+公開Issue、公開PR、公開コメントへ、次の情報を貼らないでください。
+
+- パスワード、APIキー、アクセストークン、秘密鍵、Cookie、資格情報
+- 実運用の本文、実ログ、個人情報、顧客情報、内部ホスト名
+- 復号済み本文、標準出力・標準エラーの生データ、運用ストアのコピー
+
+報告可能な非機密の準備物は、対象コミット、影響するファイル、再現条件、影響の説明、修正前後の安全な期待結果、秘密を含まない合成データです。ログが必要な場合は、固定の架空文字列へ置き換え、元ログを添付しないでください。
+
+非公開の報告経路が明示されるまでは、公開の場への脆弱性詳細の投稿を避け、リポジトリ管理者が非公開窓口を用意したことを確認してから送付してください。この文書は報告の受領や応答を保証しません。
+
+## 現在確認できる防御と限界
+
+- MONITORフックは失敗しても通常はdenyへ変換せず、固定コードの状態を返します。これは可用性を優先する既定であり、記録の完全性や安全を保証しません。
+- 本文を保存する経路では、LocalStoreがDPAPI CurrentUserで保護し、保存先のACLとreparse pointを検査します。暗号化後の本文は呼出し元プロセスのメモリに存在し、同一Windowsユーザーの別プロセス、管理者、侵害済みユーザーセッションには対抗できません。
+- 通常の評価結果は対応ルールの範囲だけです。外部コンテンツ、未確認のインタープリター、動的生成、短命プロセス、後続 `write_stdin` 入力を完全には扱いません。
+- GitHub CIは構文・文字コード・静的解析・DPAPI非依存の合成試験を確認します。運用ストア、実資格情報、恒久フック、DPAPI CurrentUserの運用境界、外部監査基準への適合はCIの合格から導けません。
+
+脅威、制御、試験、残余リスクの対応は [THREAT_MODEL.md](THREAT_MODEL.md) を参照してください。変更を提案する場合は [CONTRIBUTING.md](CONTRIBUTING.md) の隔離条件に従ってください。

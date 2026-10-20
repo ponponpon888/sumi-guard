@@ -425,7 +425,10 @@ function Save-SumiGuardExecutionIntent {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Body,
         [string]$ExecutionId = '',
         [ValidateRange(1, 2147483647)][int]$MaxItemBytes = 1MB,
-        [long]$MaxTotalBytes = 250MB
+        [long]$MaxTotalBytes = 250MB,
+        # Privacy-first intent capture: hash metadata without storing raw command text.
+        # Opt in to encrypted body storage only where explicitly required.
+        [switch]$MetadataOnly
     )
 
     try {
@@ -459,17 +462,21 @@ function Save-SumiGuardExecutionIntent {
         }
     }
 
-    $bodyResult = SumiGuard.LocalStore\Save-SumiGuardBody `
-        -StorePath $LocalStorePath `
-        -Body $Body `
-        -MaxItemBytes $MaxItemBytes `
-        -MaxTotalBytes $MaxTotalBytes
-    $bodySaved = [bool]$bodyResult.success
+    $bodyResult = $null
+    $bodySaved = $false
+    if (-not $MetadataOnly) {
+        $bodyResult = SumiGuard.LocalStore\Save-SumiGuardBody `
+            -StorePath $LocalStorePath `
+            -Body $Body `
+            -MaxItemBytes $MaxItemBytes `
+            -MaxTotalBytes $MaxTotalBytes
+        $bodySaved = [bool]$bodyResult.success
+    }
     $bodyRef = if ($bodySaved) { [string]$bodyResult.body_id } else { $null }
     $contentStatus = if ($bodySaved) { 'CAPTURED_ENCRYPTED' } else { 'HASH_ONLY' }
-    $collectionStatus = if ($bodySaved) { 'RECORDS_FOUND' } else { 'COLLECTION_FAILED' }
+    $collectionStatus = if ($bodySaved -or $MetadataOnly) { 'RECORDS_FOUND' } else { 'COLLECTION_FAILED' }
     $bodyReferenceStatus = if ($bodySaved) { 'AVAILABLE' } else { 'NOT_STORED' }
-    $failureReason = if ($bodySaved) { $null } else { [string]$bodyResult.status }
+    $failureReason = if ($MetadataOnly -or $bodySaved) { $null } else { [string]$bodyResult.status }
     $now = (Get-SumiGuardAdapterUtcNow).ToUniversalTime()
     $event = [pscustomobject][ordered]@{
         schema_version = $script:SchemaVersion
@@ -501,10 +508,14 @@ function Save-SumiGuardExecutionIntent {
         $eventFailureStatus = if ($bodySaved) {
             'EVENT_SAVE_FAILED_BODY_ORPHANED'
         }
+        elseif ($MetadataOnly) {
+            'EVENT_SAVE_FAILED_METADATA_ONLY'
+        }
         else {
             'EVENT_AND_BODY_SAVE_FAILED'
         }
-        $bodyStorageStatus = if ($bodySaved) { 'SAVED_ORPHANED' } else { 'FAILED' }
+        $bodyStorageStatus = if ($bodySaved) { 'SAVED_ORPHANED' }
+            elseif ($MetadataOnly) { 'OMITTED_BY_POLICY' } else { 'FAILED' }
         $notice = New-SumiGuardFailureRecord `
             -ExecutionId $ExecutionId `
             -FailedStage 'event-store' `
@@ -535,7 +546,7 @@ function Save-SumiGuardExecutionIntent {
     }
 
     $noticeStatus = 'NOT_REQUIRED'
-    if (-not $bodySaved) {
+    if (-not $bodySaved -and -not $MetadataOnly) {
         $notice = New-SumiGuardFailureRecord `
             -ExecutionId $ExecutionId `
             -FailedStage 'body-store' `
@@ -552,14 +563,18 @@ function Save-SumiGuardExecutionIntent {
         }
     }
 
-    $adapterStatus = if ($bodySaved) {
+    $adapterStatus = if ($MetadataOnly) {
+        'EVENT_SAVED_METADATA_ONLY'
+    }
+    elseif ($bodySaved) {
         'EVENT_AND_BODY_SAVED'
     }
     else {
         'EVENT_SAVED_BODY_COLLECTION_FAILED'
     }
-    $bodyStorageStatus = if ($bodySaved) { 'SAVED' } else { 'FAILED' }
-    return New-SumiGuardAdapterResult -Success $bodySaved -Status $adapterStatus -Properties @{
+    $bodyStorageStatus = if ($MetadataOnly) { 'OMITTED_BY_POLICY' }
+        elseif ($bodySaved) { 'SAVED' } else { 'FAILED' }
+    return New-SumiGuardAdapterResult -Success ($bodySaved -or [bool]$MetadataOnly) -Status $adapterStatus -Properties @{
         execution_id = $ExecutionId
         event_storage_status = 'SAVED'
         body_storage_status = $bodyStorageStatus

@@ -1,5 +1,36 @@
 # SUMI Guard
 
+## 公開状態とセキュリティ境界
+
+SUMI Guardは、AI開発操作を対象にした**ローカル優先の監査基盤の試作**です。実行前にホストから
+渡された入力、SUMI Guardが行った評価、独立したOSプロセス観測を別々に記録し、取得できた範囲と
+相関の確度を表示します。実行前入力の取得は、コマンドが実際に実行されたことの証明ではありません。
+
+このREADMEの公開コードは`master`の確認済みコミット
+`36e56934d26fdc7ce2296ef39a6c50113dc405b8`を対象にしています。Release tagや安定版サポート契約は
+定義されていません。PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、
+[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)は、
+この確認時点でDraft・未マージです。したがって、公開masterのインストール手順や既定動作には含めません。
+
+別worktreeの統合候補ブランチ `integration/core-privacy-governance-ci` は、上記確認済みmasterから
+PR #5、#6、#7を順に取り込んだ検証用スナップショットです。このブランチでは、Core Privacyとして
+MONITORの既定`MetadataOnly`（本文保存は明示指定時だけ）、AssessmentStoreの不正ACL拒否（自動修復なし）、
+CIの`push`をmasterだけにする条件を確認できます。これらは統合候補の動作であり、公開masterの既定動作ではありません。
+
+`NO_DETECTION`は、対応しているルールに一致しなかったという評価結果であり、安全、無感染、完全捕捉、
+実行成功の保証ではありません。SUMI GuardはOS全体の防御、無感染判定、100%の捕捉、改ざん不能な
+証拠を提供しません。同じWindowsユーザーの別プロセス、管理者、侵害済みユーザーセッションからの
+読み取り・改変・削除を防げない点も含め、運用上の境界は`SECURITY.md`と`THREAT_MODEL.md`に記載します。
+
+### Short English summary
+
+SUMI Guard is a local-first prototype for auditing AI development operations. Pre-execution input,
+assessment output, and OS observations are separate evidence types; a pre-execution record is not proof
+that the command ran. `NO_DETECTION` is not a safety or malware-free guarantee. The public `master` is
+the reference snapshot for this document. Draft PRs #2, #5, #6, and #7 are not part of the public master
+behavior. The separate integration candidate contains Core Privacy and CI workflow hardening for review
+only; its MetadataOnly default, ACL rejection, and trigger conditions are not public-master defaults.
+
 SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセス観測を分けて記録し、両者の対応を
 評価するためのローカル監視試作です。
 
@@ -48,6 +79,9 @@ SUMI Guardは、アプリ側の実行前イベントと独立したOSプロセ�
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
+- `SECURITY.md`: 脆弱性報告の窓口、対象範囲、秘密情報を含めない報告方法
+- `THREAT_MODEL.md`: 保護対象、境界、脅威ごとの制御・試験・残余リスク
+- `CONTRIBUTING.md`: 小さな変更、合成データ、隔離検証の開発規約
 - `measurements/2026-10-17-ci-windows-powershell-check.md`: 継続的検査の初回測定結果
 - `measurements/2026-10-17-monitor-hook-synthetic-tests.md`: 運用MONITORフックの合成試験結果（本文保存の実経路は未検証）
 - `measurements/2026-10-17-assessment-origin-hook-value.md`: フック記録の `evaluation_origin` 追加の測定結果（実運用フックからの動作は未検証）
@@ -101,9 +135,12 @@ DPAPI CurrentUserとユーザーACLは、別ユーザーからの通常アクセ
 ## 実行記録との接続
 
 `SumiGuard.ExecutionAdapter` は、合成した実行前イベントの `execution_id`、本文SHA-256、取得状態、
-LocalStoreの本文参照だけを平文メタデータへ保存します。本文保存が完了してからイベントを書き、
-容量超過や暗号化失敗でもMONITOR動作を継続して `COLLECTION_FAILED` を記録します。通常の一覧APIは
+LocalStoreの本文参照だけを平文メタデータへ保存します。本文を保存する経路では保存が完了してから
+イベントを書き、容量超過や暗号化失敗でもMONITOR動作を継続して `COLLECTION_FAILED` を記録します。通常の一覧APIは
 本文を返さず、`Read-SumiGuardExecutionBody` を明示的に呼び出した場合だけ復号します。
+
+統合候補ブランチのMONITORフックは、`-CaptureCommandBody`を指定しない限り本文を保存せず、ハッシュと
+必要なメタデータを記録します。本文保存の明示指定時は既存の直接アダプタ呼出し契約を維持します。
 
 合成イベントでの8件の統合試験に加え、一回限りの子Codexセッションと固定入力1件で実フック接続を
 確認済みです。新しい試験は検証済みOS観測器をそのまま再利用しましたが、既存3スクリプト自体は

@@ -7,6 +7,7 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $localStoreManifest = Join-Path $projectRoot 'src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1'
 $adapterManifest = Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1'
+$assessmentStoreManifest = Join-Path $projectRoot 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1'
 $tempRoot = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath())
 $testRoot = Join-Path $tempRoot ('sumi-guard-adapter-tests-' + [Guid]::NewGuid().ToString('N'))
 $testRootFullPath = [System.IO.Path]::GetFullPath($testRoot)
@@ -36,6 +37,151 @@ function Add-TestResult {
         passed = $true
         evidence = [pscustomobject]$Evidence
     })
+}
+
+function ConvertTo-HookProcessArgument {
+    param([Parameter(Mandatory = $true)][string]$Value)
+
+    # Paths and switches are fixed test arguments. The event JSON is sent over
+    # stdin so command text never enters the child process command line.
+    return '"' + $Value + '"'
+}
+
+function Get-RealHookEventJson {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Command)
+
+    return ([ordered]@{
+        hook_event_name = 'PreToolUse'
+        tool_name = 'Bash'
+        session_id = 'synthetic-real-adapter-session'
+        turn_id = 'synthetic-real-adapter-turn'
+        tool_use_id = 'synthetic-real-adapter-tool'
+        tool_input = [ordered]@{ command = $Command }
+    } | ConvertTo-Json -Compress -Depth 5)
+}
+
+function Invoke-SumiGuardTestChildProcess {
+    param(
+        [Parameter(Mandatory = $true)][System.Diagnostics.ProcessStartInfo]$StartInfo,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$InputText,
+        [ValidateRange(100, 120000)][int]$TimeoutMilliseconds = 30000
+    )
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $StartInfo
+    $started = $false
+    $stdoutTask = $null
+    $stderrTask = $null
+    $timedOut = $false
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('test child process did not start')
+        }
+        $started = $true
+
+        # Start both async reads before waiting so a full pipe cannot block the
+        # child. ReadToEndAsync is available in Windows PowerShell 5.1's .NET.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.StandardInput.Write($InputText)
+        $process.StandardInput.Close()
+
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $timedOut = $true
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
+            }
+            catch {
+                # The finally block retries the same process-specific cleanup.
+                Write-Verbose 'Timed-out child cleanup retry was deferred to finally.'
+            }
+            $process.WaitForExit()
+        }
+        else {
+            $process.WaitForExit()
+        }
+
+        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
+        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
+        return [pscustomobject][ordered]@{
+            exit_code = $process.ExitCode
+            child_process_exited = $process.HasExited
+            timed_out = $timedOut
+            stdout_text = $stdout
+            stderr_text = $stderr
+        }
+    }
+    finally {
+        if ($started) {
+            try {
+                if (-not $process.HasExited) {
+                    $process.Kill()
+                }
+            }
+            catch {
+                # Cleanup is scoped to the Process instance started above.
+                Write-Verbose 'Process-specific cleanup did not need a second Kill call.'
+            }
+            try {
+                $process.WaitForExit()
+            }
+            catch {
+                Write-Verbose 'Process-specific WaitForExit cleanup returned an exception.'
+            }
+            foreach ($readTask in @($stdoutTask, $stderrTask)) {
+                if ($null -ne $readTask) {
+                    try {
+                        $readTask.Wait()
+                    }
+                    catch {
+                        Write-Verbose 'Async output task was already completed or disposed.'
+                    }
+                }
+            }
+        }
+        $process.Dispose()
+    }
+}
+
+function Invoke-RealMonitorHook {
+    param(
+        [Parameter(Mandatory = $true)][string]$HookPath,
+        [Parameter(Mandatory = $true)][string]$ExecutionStorePath,
+        [Parameter(Mandatory = $true)][string]$LocalStorePath,
+        [Parameter(Mandatory = $true)][string]$AssessmentStorePath,
+        [Parameter(Mandatory = $true)][string]$NoticePath,
+        [Parameter(Mandatory = $true)][string]$ResultPath,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson,
+        [ValidateRange(100, 120000)][int]$TimeoutMilliseconds = 30000
+    )
+
+    $powerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = @(
+        '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', $HookPath,
+        '-ExecutionStorePath', $ExecutionStorePath,
+        '-LocalStorePath', $LocalStorePath,
+        '-AssessmentStorePath', $AssessmentStorePath,
+        '-NoticePath', $NoticePath,
+        '-ResultPath', $ResultPath,
+        '-TrustedWindowsPowerShellRoute')
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powerShell51
+    $startInfo.Arguments = (($arguments | ForEach-Object {
+        ConvertTo-HookProcessArgument -Value ([string]$_)
+    }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    return Invoke-SumiGuardTestChildProcess `
+        -StartInfo $startInfo `
+        -InputText $EventJson `
+        -TimeoutMilliseconds $TimeoutMilliseconds
 }
 
 function Test-ByteSequenceInFile {
@@ -119,6 +265,244 @@ try {
     }
 
     $syntheticSecret = @('SUMI', 'GUARD', 'SYNTHETIC', 'SECRET', '20261003') -join '_'
+
+    # Policy-based omission is a successful collection, not a storage failure.
+    # It must not create a protected-body file or a false failure notice.
+    $metadataExecutionId = [Guid]::NewGuid().ToString('N')
+    $bodiesBefore = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    $metadataOnly = Save-SumiGuardExecutionIntent `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -Body $syntheticSecret `
+        -ExecutionId $metadataExecutionId `
+        -MetadataOnly
+    Assert-Test $metadataOnly.success 'Metadata-only intent save failed.'
+    Assert-Test ($metadataOnly.status -ceq 'EVENT_SAVED_METADATA_ONLY') 'Metadata-only status changed.'
+    Assert-Test ($metadataOnly.body_storage_status -ceq 'OMITTED_BY_POLICY') 'Body policy was not recorded.'
+    $bodiesAfter = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    Assert-Test ($bodiesAfter -eq $bodiesBefore) 'Metadata-only path wrote a body container.'
+    $metaList = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test ($metaList.success -and $metaList.record_count -eq 1) 'Metadata-only record missing.'
+    $metaRecord = $metaList.records[0]
+    Assert-Test ($metaRecord.content_status -ceq 'HASH_ONLY') 'Metadata-only content status wrong.'
+    Assert-Test ($metaRecord.collection_status -ceq 'RECORDS_FOUND') 'Metadata-only was misclassified as failure.'
+    Assert-Test ([string]::IsNullOrEmpty([string]$metaRecord.failure_reason_code)) 'Metadata-only failure reason unexpected.'
+    Assert-Test ($metaRecord.body_reference_status -ceq 'NOT_STORED') 'Body reference incorrectly available.'
+    $noBody = Read-SumiGuardExecutionBody `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test (-not $noBody.success -and $noBody.status -ceq 'BODY_NOT_CAPTURED') `
+        'Metadata-only record unexpectedly allowed body read.'
+    $metadataNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $executionStore `
+        -ExecutionId $metadataExecutionId
+    Assert-Test ($metadataNotices.success -and $metadataNotices.notice_count -eq 0) `
+        'Metadata-only path emitted a false failure notice.'
+    $safeObjects.Add($metadataOnly)
+    $safeObjects.Add($metaList)
+    $safeObjects.Add($noBody)
+    Add-TestResult -Name 'metadata_only_omits_command_body' -Evidence @{
+        adapter_status = $metadataOnly.status
+        body_files_created = 0
+        read_status = $noBody.status
+        failure_notices = 0
+    }
+
+    $metadataEventFailureExecutionId = [Guid]::NewGuid().ToString('N')
+    $metadataEventFailureBodyCountBefore = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    try {
+        & $adapterModule { $script:SumiGuardTestForceEventWriteFailure = $true }
+        $metadataEventFailure = Save-SumiGuardExecutionIntent `
+            -ExecutionStorePath $executionStore `
+            -LocalStorePath $bodyStore `
+            -Body $syntheticSecret `
+            -ExecutionId $metadataEventFailureExecutionId `
+            -MetadataOnly
+    }
+    finally {
+        & $adapterModule { $script:SumiGuardTestForceEventWriteFailure = $false }
+    }
+    $metadataEventFailureBodyCountAfter = @(Get-ChildItem -LiteralPath $bodyStore -Filter '*.sgb' -File).Count
+    Assert-Test (-not $metadataEventFailure.success) `
+        'Metadata-only event failure unexpectedly succeeded.'
+    Assert-Test ($metadataEventFailure.status -ceq 'EVENT_SAVE_FAILED_METADATA_ONLY') `
+        'Metadata-only event failure status is incorrect.'
+    Assert-Test ($metadataEventFailure.event_storage_status -ceq 'FAILED' -and
+        $metadataEventFailure.body_storage_status -ceq 'OMITTED_BY_POLICY' -and
+        $metadataEventFailure.collection_status -ceq 'COLLECTION_FAILED') `
+        'Metadata-only event failure storage state is incorrect.'
+    Assert-Test (-not $metadataEventFailure.automatic_deny -and
+        $metadataEventFailure.monitor_action -ceq 'CONTINUE') `
+        'Metadata-only event failure changed MONITOR behavior.'
+    Assert-Test ($metadataEventFailureBodyCountAfter -eq $metadataEventFailureBodyCountBefore) `
+        'Metadata-only event failure created a body file.'
+    $metadataEventFailureRecords = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $executionStore `
+        -LocalStorePath $bodyStore `
+        -ExecutionId $metadataEventFailureExecutionId
+    Assert-Test ($metadataEventFailureRecords.record_count -eq 0) `
+        'Metadata-only event failure produced a primary event.'
+    $metadataEventFailureNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $executionStore `
+        -ExecutionId $metadataEventFailureExecutionId
+    Assert-Test ($metadataEventFailureNotices.notice_count -eq 1) `
+        'Metadata-only event failure notice count is incorrect.'
+    $safeObjects.Add($metadataEventFailure)
+    $safeObjects.Add($metadataEventFailureRecords)
+    $safeObjects.Add($metadataEventFailureNotices)
+    Add-TestResult -Name 'metadata_only_event_failure_is_collection_failure' -Evidence @{
+        adapter_status = $metadataEventFailure.status
+        event_storage_status = $metadataEventFailure.event_storage_status
+        body_storage_status = $metadataEventFailure.body_storage_status
+        collection_status = $metadataEventFailure.collection_status
+        body_files_created = $metadataEventFailureBodyCountAfter - $metadataEventFailureBodyCountBefore
+        primary_event_count = $metadataEventFailureRecords.record_count
+        automatic_deny = $metadataEventFailure.automatic_deny
+    }
+
+    # End-to-end MONITOR -> real ExecutionAdapter verification. This test lives
+    # in the DPAPI-dependent integration suite because it imports LocalStore;
+    # the hook still runs in a child Windows PowerShell 5.1 process and receives
+    # no -CaptureCommandBody switch.
+    $realCaseRoot = Join-Path $testRootFullPath 'real-hook-adapter'
+    $realBodyStore = Join-Path $realCaseRoot 'body-store'
+    $realExecutionStore = Join-Path $realCaseRoot 'execution-store'
+    $realAssessmentStore = Join-Path $realCaseRoot 'assessment-store'
+    $realNoticePath = Join-Path $realCaseRoot 'notices\monitor-hook-notices.ndjson'
+    $realResultPath = Join-Path $realCaseRoot 'result.json'
+    $realHookPath = Join-Path $projectRoot 'hooks\Invoke-SumiGuardMonitorHook.ps1'
+    $null = New-Item -ItemType Directory -Path $realCaseRoot -Force
+    $null = Import-Module $assessmentStoreManifest -Force -ErrorAction Stop
+    $realAssessmentInit = New-SumiGuardAssessmentStore -StorePath $realAssessmentStore
+    Assert-Test $realAssessmentInit.success 'Real-hook assessment-store initialization failed.'
+    $realBodyInit = Initialize-SumiGuardLocalStore -Path $realBodyStore
+    $realExecutionInit = Initialize-SumiGuardExecutionStore -Path $realExecutionStore
+    Assert-Test $realBodyInit.success 'Real-hook LocalStore initialization failed.'
+    Assert-Test $realExecutionInit.success 'Real-hook execution-store initialization failed.'
+
+    $realHookBody = "Write-Output '$syntheticSecret'"
+    $realHookRun = Invoke-RealMonitorHook `
+        -HookPath $realHookPath `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -AssessmentStorePath $realAssessmentStore `
+        -NoticePath $realNoticePath `
+        -ResultPath $realResultPath `
+        -EventJson (Get-RealHookEventJson -Command $realHookBody)
+    Assert-Test ($realHookRun.exit_code -eq 0 -and $realHookRun.child_process_exited) `
+        'Real MONITOR hook did not exit cleanly.'
+    Assert-Test (-not $realHookRun.stdout_text.Contains($syntheticSecret)) `
+        'Synthetic body leaked to MONITOR stdout.'
+    Assert-Test (-not $realHookRun.stderr_text.Contains($syntheticSecret)) `
+        'Synthetic body leaked to MONITOR stderr.'
+
+    $realDetail = Get-Content -LiteralPath $realResultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $realExecutionId = [string]$realDetail.execution_id
+    Assert-Test (-not [string]::IsNullOrWhiteSpace($realExecutionId)) `
+        'Real MONITOR hook did not produce an execution identity.'
+    $realRecords = Get-SumiGuardExecutionRecord `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -ExecutionId $realExecutionId
+    Assert-Test ($realRecords.success -and $realRecords.record_count -eq 1) `
+        'Real adapter did not generate exactly one execution record.'
+    $realRecord = $realRecords.records[0]
+    $realAssessmentRecords = Get-SumiGuardAssessmentRecord -StorePath $realAssessmentStore
+    Assert-Test ($realAssessmentRecords.success -and $realAssessmentRecords.record_count -eq 1) `
+        'Real MONITOR hook did not generate an assessment record.'
+    $realAssessmentRecord = $realAssessmentRecords.records[0]
+
+    $realHash = [Security.Cryptography.SHA256]::Create()
+    try {
+        $realExpectedHash = ([BitConverter]::ToString($realHash.ComputeHash(
+            [Text.Encoding]::UTF8.GetBytes($realHookBody)))).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+        $realHash.Dispose()
+    }
+    $realBodyFiles = @(Get-ChildItem -LiteralPath $realBodyStore -Recurse -File -Filter '*.sgb')
+    $realReadBody = Read-SumiGuardExecutionBody `
+        -ExecutionStorePath $realExecutionStore `
+        -LocalStorePath $realBodyStore `
+        -ExecutionId $realExecutionId
+    $realNotices = Get-SumiGuardCollectionFailureNotice `
+        -ExecutionStorePath $realExecutionStore `
+        -ExecutionId $realExecutionId
+    $realResponse = $realHookRun.stdout_text | ConvertFrom-Json
+    $realResponseNames = @($realResponse.PSObject.Properties.Name)
+    Assert-Test ($realResponseNames.Count -eq 1 -and $realResponseNames[0] -ceq 'systemMessage') `
+        'Real MONITOR response was not structured output only.'
+    Assert-Test ([string]$realDetail.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK') `
+        'Real MONITOR origin was not preserved.'
+    Assert-Test ([string]$realAssessmentRecord.evaluation_origin -ceq 'CODEX_PRETOOLUSE_HOOK' -and
+        [string]$realAssessmentRecord.record_type -ne 'MANAGED_EXECUTION') `
+        'Pre-execution hook was represented as managed execution.'
+    Assert-Test (-not $realDetail.automatic_deny -and $realDetail.monitor_action -ceq 'WARN_ONLY') `
+        'Real MONITOR path changed deny behavior.'
+    Assert-Test (Test-PlaintextAbsentFromTree -Path $realCaseRoot -Text $syntheticSecret) `
+        'Synthetic body leaked to a real-hook generated file.'
+    Assert-Test ($realBodyFiles.Count -eq 0) 'Real MONITOR path wrote an encrypted body file.'
+    Assert-Test ($realRecord.content_status -ceq 'HASH_ONLY' -and
+        $realRecord.collection_status -ceq 'RECORDS_FOUND' -and
+        $realRecord.body_reference_status -ceq 'NOT_STORED' -and
+        $realRecord.body_sha256 -ceq $realExpectedHash) `
+        'Real adapter metadata did not match the expected hash-only record.'
+    Assert-Test (-not $realReadBody.success -and $realReadBody.status -ceq 'BODY_NOT_CAPTURED') `
+        'Real MONITOR path unexpectedly allowed body read.'
+    Assert-Test ($realNotices.success -and $realNotices.notice_count -eq 0) `
+        'Real MetadataOnly path emitted a false failure notice.'
+    $safeObjects.Add($realRecords)
+    $safeObjects.Add($realAssessmentRecords)
+    $safeObjects.Add($realReadBody)
+    Add-TestResult -Name 'real_monitor_to_adapter_metadata_only' -Evidence @{
+        execution_record_count = $realRecords.record_count
+        assessment_record_count = $realAssessmentRecords.record_count
+        adapter_status = [string]$realDetail.intent_storage_status
+        content_status = [string]$realRecord.content_status
+        body_reference_status = [string]$realRecord.body_reference_status
+        body_hash_matches = ($realRecord.body_sha256 -ceq $realExpectedHash)
+        body_files_created = $realBodyFiles.Count
+        body_read_status = [string]$realReadBody.status
+        failure_notices = $realNotices.notice_count
+        evaluation_origin = [string]$realAssessmentRecord.evaluation_origin
+        child_process_exited = [bool]$realHookRun.child_process_exited
+        automatic_deny = [bool]$realDetail.automatic_deny
+    }
+
+    # Isolated process-management check. The child only sleeps, and the helper
+    # must time it out and reap that exact Process instance without name-based
+    # termination of unrelated processes.
+    $timeoutStartInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $timeoutStartInfo.FileName = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $timeoutArguments = @('-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 30')
+    $timeoutStartInfo.Arguments = (($timeoutArguments | ForEach-Object {
+        ConvertTo-HookProcessArgument -Value ([string]$_)
+    }) -join ' ')
+    $timeoutStartInfo.UseShellExecute = $false
+    $timeoutStartInfo.CreateNoWindow = $true
+    $timeoutStartInfo.RedirectStandardInput = $true
+    $timeoutStartInfo.RedirectStandardOutput = $true
+    $timeoutStartInfo.RedirectStandardError = $true
+    $timeoutProbe = Invoke-SumiGuardTestChildProcess `
+        -StartInfo $timeoutStartInfo `
+        -InputText '' `
+        -TimeoutMilliseconds 250
+    Assert-Test $timeoutProbe.timed_out 'Waiting child did not hit the explicit timeout.'
+    Assert-Test $timeoutProbe.child_process_exited 'Timed-out child was not reaped.'
+    Assert-Test ([string]::IsNullOrEmpty($timeoutProbe.stdout_text) -and
+        [string]::IsNullOrEmpty($timeoutProbe.stderr_text)) `
+        'Waiting child unexpectedly produced captured output.'
+    $safeObjects.Add($timeoutProbe)
+    Add-TestResult -Name 'timed_out_child_is_reaped' -Evidence @{
+        timed_out = $timeoutProbe.timed_out
+        child_process_exited = $timeoutProbe.child_process_exited
+        stdout_empty = [string]::IsNullOrEmpty($timeoutProbe.stdout_text)
+        stderr_empty = [string]::IsNullOrEmpty($timeoutProbe.stderr_text)
+    }
 
     $normalExecutionId = [Guid]::NewGuid().ToString('N')
     $normal = Save-SumiGuardExecutionIntent `

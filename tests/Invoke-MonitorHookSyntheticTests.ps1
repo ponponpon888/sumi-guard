@@ -217,7 +217,6 @@ function Invoke-Hook {
     $script:childStartCount++
 
     $script:stage = $CaseName + '/read-result'
-    $stdoutText = ($stdout | Out-String)
     $detail = $null
     if (Test-Path -LiteralPath $resultPath) {
         $detail = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -238,7 +237,7 @@ function Invoke-Hook {
 
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
-        stdout_text = $stdoutText
+        stdout_text = ($stdout | Out-String)
         detail = $detail
         store_text = $storeText
         notice_text = $noticeText
@@ -280,6 +279,10 @@ try {
     }
     $script:stage = 'add/HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT'
     Add-Result 'HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT' $sourceClean
+    $metadataOnlyWiring = $hookSource -match '\[switch\]\$CaptureCommandBody' -and
+        $hookSource -match '-MetadataOnly:\(-not \[bool\]\$CaptureCommandBody\)'
+    $script:stage = 'add/HOOK_DEFAULTS_TO_METADATA_ONLY'
+    Add-Result 'HOOK_DEFAULTS_TO_METADATA_ONLY' $metadataOnlyWiring
 
     # Detection on a trusted route.
     # One case must not end the run: a case that throws is recorded as a
