@@ -17,7 +17,6 @@ $failure = $null
 $adapterModule = $null
 $localStoreModule = $null
 $activeWriterProcesses = New-Object System.Collections.Generic.List[object]
-$writerOutputPaths = New-Object System.Collections.Generic.List[string]
 $childProcessesCleaned = $true
 
 function Assert-Test {
@@ -48,6 +47,17 @@ function ConvertTo-ProcessArgument {
     param([Parameter(Mandatory = $true)][string]$Value)
 
     return '"' + $Value.Replace('"', '\"') + '"'
+}
+
+function Get-DiagnosticText {
+    param([string]$Value)
+
+    if ([string]::IsNullOrWhiteSpace($Value)) { return '<none>' }
+    $flattened = ($Value -replace '[\r\n]+', ' ').Trim()
+    if ($flattened.Length -gt 300) {
+        return $flattened.Substring(0, 300) + '...'
+    }
+    return $flattened
 }
 
 function Get-MetadataPath {
@@ -102,6 +112,7 @@ function New-ExactMetadataRecord {
         record_id = [Guid]::NewGuid().ToString('N')
         record_type = $RecordType
         multibyte_text = "日本語`nΔ"
+        body_ref = $null
         padding = ''
     }
     for ($attempt = 0; $attempt -lt 12; $attempt++) {
@@ -169,11 +180,16 @@ try {
     exit 0
 }
 catch [System.IO.IOException] {
-    Write-Error $_
-    exit 2
+    $message = $_.Exception.Message
+    if ($message -like 'Metadata log capacity exceeded for *.') {
+        [Console]::Error.WriteLine(('capacity-rejected: ' + $message))
+        exit 2
+    }
+    [Console]::Error.WriteLine(('unexpected-io-error: ' + $message))
+    exit 1
 }
 catch {
-    Write-Error $_
+    [Console]::Error.WriteLine(('unexpected-error: ' + $_.Exception.Message))
     exit 1
 }
 '@
@@ -193,8 +209,6 @@ function Start-WriterProcess {
     )
 
     $powerShell51 = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $stdoutPath = Join-Path $script:testRootFullPath ('writer-' + $Token + '.stdout')
-    $stderrPath = Join-Path $script:testRootFullPath ('writer-' + $Token + '.stderr')
     $arguments = @(
         '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', $ScriptPath,
@@ -205,21 +219,64 @@ function Start-WriterProcess {
     $argumentText = ($arguments | ForEach-Object {
         ConvertTo-ProcessArgument -Value ([string]$_)
     }) -join ' '
-    $process = Start-Process `
-        -FilePath $powerShell51 `
-        -ArgumentList $argumentText `
-        -RedirectStandardOutput $stdoutPath `
-        -RedirectStandardError $stderrPath `
-        -WindowStyle Hidden `
-        -PassThru
-    $script:writerOutputPaths.Add($stdoutPath)
-    $script:writerOutputPaths.Add($stderrPath)
-    return $process
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $powerShell51
+    $startInfo.Arguments = $argumentText
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('Could not start the synthetic writer process.')
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        return [pscustomobject][ordered]@{
+            token = $Token
+            process = $process
+            stdout_task = $stdoutTask
+            stderr_task = $stderrTask
+        }
+    }
+    catch {
+        try {
+            if (-not $process.HasExited) { $process.Kill() }
+            $process.WaitForExit()
+        }
+        catch { }
+        $process.Dispose()
+        throw
+    }
+}
+
+function Wait-WriterProcesses {
+    param([int]$TimeoutMilliseconds = 90000)
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    foreach ($writer in @($script:activeWriterProcesses.ToArray())) {
+        $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+        if (-not $writer.process.WaitForExit($remaining)) {
+            throw [System.TimeoutException]::new('Synthetic writer process timeout.')
+        }
+        foreach ($task in @($writer.stdout_task, $writer.stderr_task)) {
+            $remaining = [int][Math]::Max(1, ($deadline - [DateTime]::UtcNow).TotalMilliseconds)
+            if (-not $task.Wait($remaining)) {
+                throw [System.TimeoutException]::new('Synthetic writer output capture timeout.')
+            }
+        }
+        $writer.process.Refresh()
+        if ($null -eq $writer.process.ExitCode) {
+            throw [System.InvalidOperationException]::new('Synthetic writer exit code was unavailable after termination.')
+        }
+    }
 }
 
 function Stop-WriterProcesses {
-    $processes = @($script:activeWriterProcesses.ToArray())
-    foreach ($process in $processes) {
+    foreach ($writer in @($script:activeWriterProcesses.ToArray())) {
+        $process = $writer.process
         try {
             if (-not $process.HasExited) {
                 $process.Kill()
@@ -228,20 +285,14 @@ function Stop-WriterProcesses {
         catch {
             $script:childProcessesCleaned = $false
         }
-        try { $process.WaitForExit() } catch { $script:childProcessesCleaned = $false }
+        try { [void]$process.WaitForExit(30000) } catch { $script:childProcessesCleaned = $false }
         try {
             if (-not $process.HasExited) { $script:childProcessesCleaned = $false }
         }
         catch { $script:childProcessesCleaned = $false }
-        $process.Dispose()
+        try { $process.Dispose() } catch { $script:childProcessesCleaned = $false }
     }
     $script:activeWriterProcesses.Clear()
-    foreach ($path in @($script:writerOutputPaths)) {
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
-            Remove-Item -LiteralPath $path -Force
-        }
-    }
-    $script:writerOutputPaths.Clear()
 }
 
 try {
@@ -302,19 +353,30 @@ try {
                 -Kind Event `
                 -Token ([string]$token)))
         }
-        $deadline = [DateTime]::UtcNow.AddSeconds(90)
-        do {
-            $active = @($script:activeWriterProcesses | Where-Object { -not $_.HasExited })
-            if ($active.Count -eq 0) { break }
-            Start-Sleep -Milliseconds 50
-        } while ([DateTime]::UtcNow -lt $deadline)
-        Assert-Test (@($script:activeWriterProcesses | Where-Object { -not $_.HasExited }).Count -eq 0) `
-            'Concurrent metadata writers exceeded the 90-second timeout.'
-        $exitCodes = @($script:activeWriterProcesses | ForEach-Object { $_.Refresh(); $_.ExitCode })
+        Wait-WriterProcesses -TimeoutMilliseconds 90000
+        $writerResults = @($script:activeWriterProcesses.ToArray() | ForEach-Object {
+            $exitCode = $_.process.ExitCode
+            if ($null -eq $exitCode) {
+                throw [System.InvalidOperationException]::new('Synthetic writer exit code was unavailable.')
+            }
+            [pscustomobject][ordered]@{
+                token = [string]$_.token
+                exit_code = [int]$exitCode
+                stdout = [string]$_.stdout_task.Result
+                stderr = [string]$_.stderr_task.Result
+            }
+        })
+        $exitCodes = @($writerResults | ForEach-Object { $_.exit_code })
         $acceptedCount = @($exitCodes | Where-Object { $_ -eq 0 }).Count
         $rejectedCount = @($exitCodes | Where-Object { $_ -eq 2 }).Count
         Assert-Test ($acceptedCount -eq 3 -and $rejectedCount -eq 1) `
-            ('Unexpected concurrent writer result: exit_codes={0}' -f ($exitCodes -join ','))
+            ('Unexpected concurrent writer result: {0}' -f
+                (($writerResults | ForEach-Object {
+                    'token={0} exit={1} stderr={2}' -f
+                        $_.token,
+                        $_.exit_code,
+                        (Get-DiagnosticText -Value $_.stderr)
+                }) -join ' | '))
         $concurrentPath = Get-MetadataPath -StorePath $concurrentStore -Kind Event
         Assert-Test ((Get-MetadataLength -Path $concurrentPath) -le $metadataLimit) `
             'Concurrent writers exceeded the metadata log limit.'
