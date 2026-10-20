@@ -271,3 +271,13 @@ Exit code `0` means evaluation completed; `2` means evaluator failure; `3` means
 The assessment-only CLI never executes or saves `CommandText`. It labels declared Windows PowerShell 5.1 source separately from a verified execution interpreter. It omits a whole-assessment reason when no fixed reason code exists; detected findings still show their rule ID, severity, and fixed Japanese explanation.
 
 The CLI displays Japanese fixed warnings for detected rules, but never prints the supplied source. It is assessment-only and does not establish that any execution interpreter was verified.
+
+## 作った人
+
+**公門 慎吾（Shingo Kumon）** — くもん しんご
+
+AI を使った開発で、Web サービスと業務の仕組みを作り、複数のサービスを本番で運用しています。
+
+- ほかの作品: [GitHub プロフィール](https://github.com/ponponpon888)
+- Web: [shingokumon.com](https://www.shingokumon.com) / X: [@shingo_kumon](https://x.com/shingo_kumon)
+- 開発の相談（業務委託・フルリモート）: [お問い合わせ](https://www.shingokumon.com/contact)
