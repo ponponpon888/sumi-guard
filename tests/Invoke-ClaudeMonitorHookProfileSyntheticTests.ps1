@@ -38,6 +38,10 @@ $script:unreapedCount = 0
 # A run whose waits could not be completed, or whose children could not be
 # checked, has not shown that it left nothing behind. That is a failure too.
 $script:unverifiedCount = 0
+# The hook starts no processes of its own, so a child that had to be
+# terminated after its launcher exited is an unexpected leftover, not
+# routine cleanup.
+$script:orphanCount = 0
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-claude-hook-' + [Guid]::NewGuid().ToString('N'))
 
 function Add-Result {
@@ -178,73 +182,144 @@ function Get-CodexEventJson {
 # gets its own limit, and each step that could fail gets its own reported
 # state, because a step that could not answer must never read as "nothing
 # left running".
+#
+# A tree kill only reaches what is still under the launcher. When cmd exits
+# first and leaves its PowerShell behind, that child has no tree to be killed
+# with, so it is terminated individually instead. Doing that safely needs more
+# than a pid: pids are reused, and a reused one belongs to a process this test
+# never started. Every observed child therefore carries its start time, and
+# nothing is terminated unless both still match.
 
-# The PowerShell processes directly below the given one. cmd also brings up a
-# console host that the OS owns and that can briefly outlive cmd, so only what
-# this test started is tracked and that host is not mistaken for a leak. A
-# failed query returns ok=$false instead of an empty list: "could not look" is
-# not "looked and found nothing".
+# The PowerShell processes directly below the given one, each with the start
+# time that identifies it. cmd also brings up a console host that the OS owns
+# and that can briefly outlive cmd, so only what this test started is tracked
+# and that host is not mistaken for a leak. A failed query returns ok=$false
+# instead of an empty list: "could not look" is not "looked and found
+# nothing".
 function Get-ChildProcessSnapshot {
     param([Parameter(Mandatory = $true)][int]$ParentId)
 
-    $ids = New-Object System.Collections.Generic.List[int]
+    $found = New-Object System.Collections.Generic.List[object]
     try {
         foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
             -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
-            if ([string]$entry.Name -like 'powershell*') {
-                $ids.Add([int]$entry.ProcessId)
+            if ([string]$entry.Name -like 'powershell*' -and $null -ne $entry.CreationDate) {
+                $found.Add([pscustomobject]@{
+                    id = [int]$entry.ProcessId
+                    started = [DateTime]$entry.CreationDate
+                })
             }
         }
-        return [pscustomobject]@{ ok = $true; ids = $ids.ToArray() }
+        return [pscustomobject]@{ ok = $true; items = $found.ToArray() }
     }
     catch {
-        return [pscustomobject]@{ ok = $false; ids = @() }
+        return [pscustomobject]@{ ok = $false; items = @() }
     }
 }
 
-# Waits for each id to disappear within a grace period and keeps the three
-# outcomes apart: gone, still running, and could not be determined. An
-# undetermined check is reported as unverified and never rounded to gone.
-function Test-ProcessIdGone {
+# What an observed child is now: gone, still the one we started, a different
+# process that happens to hold the same pid, or undetermined. The start time
+# is what separates the second from the third, and the name is checked too so
+# that a recycled pid cannot be mistaken for ours on a clock comparison alone.
+function Get-ObservedProcessState {
+    param([Parameter(Mandatory = $true)]$Entry)
+
+    try {
+        $live = @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "ProcessId=$($Entry.id)" -ErrorAction Stop)
+        if ($live.Count -eq 0) { return 'gone' }
+        $holder = $live[0]
+        if ($null -eq $holder.CreationDate) { return 'unknown' }
+        if ([string]$holder.Name -notlike 'powershell*') { return 'reused' }
+        # Two sources for the same instant, so a small tolerance rather than
+        # an exact comparison. Far too tight for a different process to slip
+        # through: a reused pid is a later start by orders of magnitude more.
+        if ([Math]::Abs((([DateTime]$holder.CreationDate) - $Entry.started).TotalMilliseconds) -gt 2000) {
+            return 'reused'
+        }
+        return 'match'
+    }
+    catch {
+        return 'unknown'
+    }
+}
+
+# Terminates one observed child, re-checking its identity through the handle
+# immediately before the kill so that a pid recycled between the check and
+# here is still not touched.
+function Invoke-ObservedProcessTermination {
+    param([Parameter(Mandatory = $true)]$Entry)
+
+    try {
+        $handle = [System.Diagnostics.Process]::GetProcessById([int]$Entry.id)
+        try {
+            if ($handle.HasExited) { return $false }
+            if ([Math]::Abs(($handle.StartTime - $Entry.started).TotalMilliseconds) -gt 2000) {
+                return $false
+            }
+            $handle.Kill()
+            return $true
+        }
+        finally {
+            $handle.Dispose()
+        }
+    }
+    catch {
+        return $false
+    }
+}
+
+# Brings the observed children to an end and reports what happened, under one
+# deadline that covers both the termination and the confirmation. Running out
+# of time with one of ours still alive is a leak; running out while the state
+# is undetermined is an unverified run. Neither is reported as success.
+function Invoke-ObservedProcessReap {
     param(
-        [Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$ProcessId,
-        [ValidateRange(0, 30000)][int]$TimeoutMilliseconds = 5000
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Observed,
+        [ValidateRange(1000, 60000)][int]$TimeoutMilliseconds = 15000
     )
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
     $gone = $true
     $verified = $true
-    foreach ($id in $ProcessId) {
+    $terminated = 0
+    $skipped = 0
+    foreach ($entry in $Observed) {
+        $killed = $false
         while ($true) {
-            $state = 'unknown'
-            try {
-                $handle = [System.Diagnostics.Process]::GetProcessById($id)
-                try {
-                    $state = if ($handle.HasExited) { 'gone' } else { 'alive' }
-                }
-                finally {
-                    $handle.Dispose()
-                }
-            }
-            catch [System.ArgumentException] {
-                # GetProcessById throws this exact type when no process with
-                # that id is running, which is the answer we want.
-                $state = 'gone'
-            }
-            catch {
-                # Anything else means the question was not answered.
-                $state = 'unknown'
-            }
-
-            if ($state -ceq 'gone') { break }
-            if ([DateTime]::UtcNow -gt $deadline) {
-                if ($state -ceq 'alive') { $gone = $false } else { $verified = $false }
+            $state = Get-ObservedProcessState -Entry $entry
+            if ($state -ceq 'gone') {
+                if ($killed) { $terminated++ }
                 break
             }
+            if ($state -ceq 'reused') {
+                # Someone else's process now holds this pid. Ours is gone and
+                # this one is left alone.
+                $skipped++
+                break
+            }
+            if ($state -ceq 'unknown') {
+                if ([DateTime]::UtcNow -gt $deadline) { $verified = $false; break }
+                Start-Sleep -Milliseconds 50
+                continue
+            }
+
+            # Still the process this run started.
+            if (-not $killed) {
+                $null = Invoke-ObservedProcessTermination -Entry $entry
+                $killed = $true
+            }
+            if ([DateTime]::UtcNow -gt $deadline) { $gone = $false; break }
             Start-Sleep -Milliseconds 50
         }
     }
-    return [pscustomobject]@{ gone = $gone; verified = $verified }
+
+    return [pscustomobject]@{
+        gone = $gone
+        verified = $verified
+        terminated = $terminated
+        skipped_foreign = $skipped
+    }
 }
 
 # taskkill under its own limit. Left unbounded it is simply one more way for
@@ -321,7 +396,9 @@ function Invoke-SumiGuardTestProcess {
     $exitObserved = $false
     $outputComplete = $false
     $enumerationOk = $true
-    $observed = @()
+    $observed = New-Object System.Collections.Generic.List[object]
+    $seenIds = New-Object System.Collections.Generic.HashSet[int]
+    $reap = $null
     $stdout = ''
     $stderr = ''
     $exitCode = $null
@@ -333,12 +410,17 @@ function Invoke-SumiGuardTestProcess {
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
 
-        # One look for the grandchild while the run is still in progress. A run
-        # that finishes first simply has nothing to list, which is not a leak.
-        if (-not $process.WaitForExit(250)) {
+        # Children can only be enumerated while their parent is alive, so the
+        # looks happen early and more than once. A launcher that exits first
+        # still gets its children recorded here, which is what makes reaping
+        # them afterwards possible at all.
+        foreach ($waitMs in @(250, 750)) {
+            if ($process.WaitForExit($waitMs)) { break }
             $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-            $enumerationOk = $snapshot.ok
-            $observed = @($snapshot.ids)
+            if (-not $snapshot.ok) { $enumerationOk = $false }
+            foreach ($item in @($snapshot.items)) {
+                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) }
+            }
         }
 
         if ($process.WaitForExit($TimeoutMilliseconds)) {
@@ -346,15 +428,22 @@ function Invoke-SumiGuardTestProcess {
         }
         else {
             $timedOut = $true
-            if ($observed.Count -eq 0 -and $enumerationOk) {
-                $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-                $enumerationOk = $snapshot.ok
-                $observed = @($snapshot.ids)
+            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
+            if (-not $snapshot.ok) { $enumerationOk = $false }
+            foreach ($item in @($snapshot.items)) {
+                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) }
             }
             $killCompleted = Invoke-ProcessTreeTermination -ProcessId $process.Id `
                 -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
             $exitObserved = $process.WaitForExit($ShutdownTimeoutMilliseconds)
         }
+
+        # Anything the launcher left behind is ended before the output is
+        # read. A surviving child inherits the pipe, so reading first would
+        # block until that child happened to exit on its own, which is the
+        # very wait this helper exists to bound.
+        $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
+            -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
 
         $outputComplete = $true
         if ($stdoutTask.Wait($ShutdownTimeoutMilliseconds)) { $stdout = [string]$stdoutTask.Result }
@@ -377,7 +466,11 @@ function Invoke-SumiGuardTestProcess {
         $process.Dispose()
     }
 
-    $reap = Test-ProcessIdGone -ProcessId $observed
+    # Only when the run above threw before reaching the reap.
+    if ($null -eq $reap) {
+        $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
+            -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
+    }
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
         timed_out = $timedOut
@@ -386,6 +479,8 @@ function Invoke-SumiGuardTestProcess {
         kill_completed = $killCompleted
         observed_descendants = $observed.Count
         descendants_enumerated = $enumerationOk
+        descendants_terminated = $reap.terminated
+        descendants_skipped_foreign = $reap.skipped_foreign
         descendants_reaped = $reap.gone
         descendants_verified = ($reap.verified -and $enumerationOk)
         stdout_text = $stdout
@@ -456,6 +551,7 @@ function Invoke-Hook {
     if (-not $run.descendants_reaped) { $script:unreapedCount++ }
     if (-not ($run.descendants_verified -and $run.output_complete -and
         $run.exit_observed -and $run.kill_completed)) { $script:unverifiedCount++ }
+    if ([int]$run.descendants_terminated -gt 0) { $script:orphanCount++ }
     $stdout = [string]$run.stdout_text
     $exitCode = $run.exit_code
 
@@ -541,6 +637,105 @@ try {
     }
     $script:stage = 'add/HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT'
     Add-Result 'HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT' $sourceClean
+
+    # Control: the launcher exits first and leaves its PowerShell behind.
+    # This is the path a tree kill cannot close, because by the time anyone
+    # looks there is no tree left to walk: the child has to be ended by its
+    # own identity or not at all. cmd lingers just long enough to be
+    # enumerated, then exits while the child keeps sleeping.
+    #
+    # The helper is called directly rather than through Invoke-Hook, so this
+    # deliberate leftover is not counted against the run.
+    try {
+        $script:stage = 'assert/orphaned-child-control'
+        $orphanRoot = Join-Path $workRoot 'orphan-control'
+        $null = New-Item -ItemType Directory -Path $orphanRoot -Force
+        $orphanScript = Join-Path $orphanRoot 'orphan.cmd'
+        Set-Content -LiteralPath $orphanScript -Encoding Ascii -Value @(
+            '@echo off',
+            ('start "" /b "' + $powerShell51 + '" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 120"'),
+            'ping -n 3 127.0.0.1 >nul',
+            'exit /b 0')
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $orphanRun = Invoke-SumiGuardTestProcess `
+            -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+            -Arguments ('/s /c "' + $orphanScript + '"') `
+            -TimeoutMilliseconds 30000
+        $watch.Stop()
+        $script:childStartCount++
+        $script:stage = 'add/ORPHANED_CHILD_IS_REAPED_AFTER_LAUNCHER_EXITS'
+        Add-Result 'ORPHANED_CHILD_IS_REAPED_AFTER_LAUNCHER_EXITS' (
+            # The launcher ended on its own: this is not the timeout path.
+            -not [bool]$orphanRun.timed_out -and
+            [bool]$orphanRun.exit_observed -and
+            [int]$orphanRun.observed_descendants -ge 1 -and
+            # The child outlived cmd and had to be ended by identity.
+            [int]$orphanRun.descendants_terminated -ge 1 -and
+            [bool]$orphanRun.descendants_enumerated -and
+            [bool]$orphanRun.descendants_verified -and
+            [bool]$orphanRun.descendants_reaped -and
+            [bool]$orphanRun.output_complete -and
+            # Far below the 120s the child asked for.
+            $watch.Elapsed.TotalSeconds -lt 60) -Observed @{
+                elapsed_seconds = [math]::Round($watch.Elapsed.TotalSeconds, 1)
+                timed_out = [bool]$orphanRun.timed_out
+                exit_observed = [bool]$orphanRun.exit_observed
+                observed_descendants = [int]$orphanRun.observed_descendants
+                descendants_terminated = [int]$orphanRun.descendants_terminated
+                descendants_enumerated = [bool]$orphanRun.descendants_enumerated
+                descendants_verified = [bool]$orphanRun.descendants_verified
+                descendants_reaped = [bool]$orphanRun.descendants_reaped
+                output_complete = [bool]$orphanRun.output_complete
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_ORPHANED_CHILD_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # Control: a pid that now belongs to a different process must be left
+    # alone. This test's own process stands in for one, recorded with a start
+    # time that does not match, which is exactly what a recycled pid looks
+    # like. If identity were checked by pid alone, this case would terminate
+    # the test itself.
+    try {
+        $script:stage = 'assert/recycled-pid-control'
+        $foreign = [pscustomobject]@{ id = $PID; started = (Get-Date).AddDays(-1) }
+        $foreignReap = Invoke-ObservedProcessReap -Observed @($foreign) -TimeoutMilliseconds 3000
+        $selfAlive = $false
+        try {
+            $null = [System.Diagnostics.Process]::GetProcessById($PID)
+            $selfAlive = $true
+        }
+        catch {
+            $selfAlive = $false
+        }
+        $script:stage = 'add/RECYCLED_PID_IS_NOT_TERMINATED'
+        Add-Result 'RECYCLED_PID_IS_NOT_TERMINATED' (
+            $selfAlive -and
+            [int]$foreignReap.skipped_foreign -eq 1 -and
+            [int]$foreignReap.terminated -eq 0 -and
+            # Ours is accounted for: the process we recorded is gone, and the
+            # one holding its pid now is somebody else's.
+            [bool]$foreignReap.gone -and
+            [bool]$foreignReap.verified) -Observed @{
+                self_alive = $selfAlive
+                skipped_foreign = [int]$foreignReap.skipped_foreign
+                terminated = [int]$foreignReap.terminated
+                gone = [bool]$foreignReap.gone
+                verified = [bool]$foreignReap.verified
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_RECYCLED_PID_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
 
     # Control for the waiting machinery itself. Every other case here finishes
     # on its own, so none of them exercises the timeout, the tree kill or the
@@ -928,7 +1123,7 @@ finally {
         # failed run, not a footnote under a successful one.
         success = ($failed.Count -eq 0 -and $null -eq $failure -and
             $workRootRemoved -and $script:timedOutCount -eq 0 -and $script:unreapedCount -eq 0 -and
-            $script:unverifiedCount -eq 0)
+            $script:unverifiedCount -eq 0 -and $script:orphanCount -eq 0)
         powershell_version = $PSVersionTable.PSVersion.ToString()
         failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
         failure_line = $(if ($null -eq $failure) { $null } else { [int]$failure.script_line_number })
@@ -944,6 +1139,7 @@ finally {
         child_processes_timed_out = $script:timedOutCount
         child_processes_left_running = $script:unreapedCount
         child_process_state_unverified = $script:unverifiedCount
+        child_processes_terminated_after_launcher_exit = $script:orphanCount
         command_inputs_executed = $false
         body_store_written = $false
         network_access_performed = $false
