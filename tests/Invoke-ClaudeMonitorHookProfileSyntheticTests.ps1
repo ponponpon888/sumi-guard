@@ -186,24 +186,128 @@ function Get-CodexEventJson {
 # A tree kill only reaches what is still under the launcher. When cmd exits
 # first and leaves its PowerShell behind, that child has no tree to be killed
 # with, so it is terminated individually instead. Identifying it by pid alone
-# would be wrong, because pids are reused. It is identified by a handle opened
-# the moment it is observed: while that handle is held the kernel keeps the
-# pid reserved, so it cannot come to mean a different process, and the handle
-# is the thing terminated later. Start times are compared exactly, never
-# within a tolerance, and a child whose identity cannot be confirmed is left
-# running and reported as a failure rather than killed on a guess.
+# would be wrong, because pids are reused. It is identified by a native
+# handle acquired the moment it is observed: while that handle is held the
+# kernel keeps the pid reserved, so it cannot come to mean a different
+# process, and the handle is the thing terminated later. Start times are
+# compared exactly, never within a tolerance.
+
+# Decides what to do about one candidate child, with the two operations that
+# can fail injected so the decision can be tested without having to provoke a
+# pid reuse or an access denial for real.
+#
+# The order matters. The native handle is acquired before anything else is
+# read, so every later check looks at a pid the kernel is holding for us; the
+# start time is read through that handle; and only then is the creation
+# timestamp read a second time. Bracketing the handle acquisition that way is
+# what rules out a pid that moved before it could be pinned.
+#
+# Three outcomes, kept apart on purpose. 'skip' means the process is not
+# running, which is nothing to clean up. 'record' means it is pinned and
+# identified. 'unreliable' means the question could not be answered, which is
+# never rounded down to either of the others.
+function Get-ObservedChildRegistration {
+    param(
+        [Parameter(Mandatory = $true)][int]$ChildId,
+        [Parameter(Mandatory = $true)][DateTime]$CreatedAtFirstRead,
+        [Parameter(Mandatory = $true)][scriptblock]$OpenProcess,
+        [Parameter(Mandatory = $true)][scriptblock]$ReadCurrent
+    )
+
+    $handle = $null
+    $keepHandle = $false
+    try {
+        try {
+            $handle = & $OpenProcess $ChildId
+        }
+        catch [System.ArgumentException] {
+            # GetProcessById raises exactly this when no process holds the id.
+            # It is the only exception that means "already gone"; treating any
+            # other failure the same way would quietly drop a live child.
+            return [pscustomobject]@{ action = 'skip'; reason = 'PROCESS_NOT_RUNNING'; handle = $null; started = $null }
+        }
+        catch {
+            # Access denied and everything else: the child may well be running
+            # and we simply cannot establish what it is.
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'OPEN_FAILED'; handle = $null; started = $null }
+        }
+
+        if ($null -eq $handle) {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'OPEN_RETURNED_NOTHING'; handle = $null; started = $null }
+        }
+
+        # Force the native handle now. Until this is touched the pid is not
+        # pinned, and every check after it would be open to the reuse this
+        # whole function exists to exclude.
+        try {
+            $null = $handle.SafeHandle
+        }
+        catch {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'HANDLE_NOT_ACQUIRED'; handle = $null; started = $null }
+        }
+
+        $started = $null
+        try {
+            $started = $handle.StartTime
+        }
+        catch {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'START_TIME_UNREADABLE'; handle = $null; started = $null }
+        }
+
+        $current = $null
+        try {
+            $current = & $ReadCurrent $ChildId
+        }
+        catch {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_FAILED'; handle = $null; started = $null }
+        }
+
+        if ($null -eq $current) {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_EMPTY'; handle = $null; started = $null }
+        }
+        if ([string]$current.Name -notlike 'powershell*') {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_IDENTITY_CHANGED'; handle = $null; started = $null }
+        }
+        if ($null -eq $current.CreationDate) {
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_TIMESTAMP_MISSING'; handle = $null; started = $null }
+        }
+        if (([DateTime]$current.CreationDate) -ne $CreatedAtFirstRead) {
+            # The pid changed hands between the two reads that bracket the
+            # handle. Whatever is there now is not what was listed.
+            return [pscustomobject]@{ action = 'unreliable'; reason = 'IDENTITY_CHANGED'; handle = $null; started = $null }
+        }
+
+        $keepHandle = $true
+        return [pscustomobject]@{ action = 'record'; reason = 'PINNED'; handle = $handle; started = $started }
+    }
+    finally {
+        # Anything that is not being handed back is released here, on every
+        # path including the failing ones.
+        if (-not $keepHandle -and $null -ne $handle) {
+            try { $handle.Dispose() } catch {
+                Write-Verbose 'Candidate child handle was already released.'
+            }
+        }
+    }
+}
 
 # The PowerShell processes directly below the given one, each pinned by a
-# handle opened now. cmd also brings up a console host that the OS owns and
-# that can briefly outlive cmd, so only what this test started is tracked.
+# native handle before it is recorded. cmd also brings up a console host that
+# the OS owns and that can briefly outlive cmd, so only what this test started
+# is tracked.
 #
-# A failed query returns ok=$false instead of an empty list: "could not look"
-# is not "looked and found nothing". A child that cannot be pinned, or whose
-# creation timestamp changes between the two reads that bracket opening the
-# handle, is reported the same way: it is not recorded as ours, and the
-# snapshot is marked unreliable.
+# ok=$false means the list cannot be trusted, which is not the same as an
+# empty list. A candidate that could not be pinned or identified sets it; a
+# candidate that simply is not running any more does not.
 function Get-ChildProcessSnapshot {
     param([Parameter(Mandatory = $true)][int]$ParentId)
+
+    $openProcess = { param($id) [System.Diagnostics.Process]::GetProcessById($id) }
+    $readCurrent = {
+        param($id)
+        @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop) |
+            Select-Object -First 1
+    }
 
     $found = New-Object System.Collections.Generic.List[object]
     $ok = $true
@@ -211,64 +315,34 @@ function Get-ChildProcessSnapshot {
         foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
             -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
 
-            if ([string]$entry.Name -notlike 'powershell*' -or $null -eq $entry.CreationDate) { continue }
-            $childId = [int]$entry.ProcessId
-            $createdAtFirstRead = [DateTime]$entry.CreationDate
+            if ([string]$entry.Name -notlike 'powershell*') { continue }
+            if ($null -eq $entry.CreationDate) { $ok = $false; continue }
 
-            $handle = $null
-            try {
-                $handle = [System.Diagnostics.Process]::GetProcessById($childId)
-            }
-            catch {
-                # Exited between the listing and here. Nothing to pin and
-                # nothing left to reap.
-                continue
-            }
+            $registration = Get-ObservedChildRegistration `
+                -ChildId ([int]$entry.ProcessId) `
+                -CreatedAtFirstRead ([DateTime]$entry.CreationDate) `
+                -OpenProcess $openProcess `
+                -ReadCurrent $readCurrent
 
-            # The handle now holds the pid, so read the creation timestamp
-            # once more from the same source. Equal means the handle pins the
-            # process that was listed; anything else means the pid moved
-            # before it could be pinned, which is not something to act on.
-            $confirmed = $false
-            try {
-                $recheck = @(Get-CimInstance -ClassName Win32_Process `
-                    -Filter "ProcessId=$childId" -ErrorAction Stop)
-                if ($recheck.Count -eq 1 -and
-                    [string]$recheck[0].Name -like 'powershell*' -and
-                    $null -ne $recheck[0].CreationDate -and
-                    ([DateTime]$recheck[0].CreationDate) -eq $createdAtFirstRead) {
-                    $confirmed = $true
-                }
-            }
-            catch {
-                $confirmed = $false
-            }
-
-            if (-not $confirmed) {
-                $handle.Dispose()
-                $ok = $false
-                continue
-            }
-
-            # From here on the handle is the identity. StartTime is read from
-            # it once and kept so the reap can confirm, by exact comparison,
-            # that it is still looking at the same process object.
-            try {
+            if ($registration.action -ceq 'record') {
                 $found.Add([pscustomobject]@{
-                    handle = $handle
-                    id = $childId
-                    started = $handle.StartTime
+                    handle = $registration.handle
+                    id = [int]$entry.ProcessId
+                    started = $registration.started
                 })
             }
-            catch {
-                $handle.Dispose()
+            elseif ($registration.action -ceq 'unreliable') {
                 $ok = $false
             }
         }
         return [pscustomobject]@{ ok = $ok; items = $found.ToArray() }
     }
     catch {
-        foreach ($item in $found) { $item.handle.Dispose() }
+        foreach ($item in $found) {
+            try { $item.handle.Dispose() } catch {
+                Write-Verbose 'Observed child handle was already released.'
+            }
+        }
         return [pscustomobject]@{ ok = $false; items = @() }
     }
 }
@@ -309,8 +383,6 @@ function Invoke-ObservedProcessReap {
                 break
             }
 
-            # Still running. Confirm it is the same process object before
-            # doing anything to it.
             $sameProcess = $false
             $identityKnown = $true
             try { $sameProcess = ($handle.StartTime -eq $item.started) } catch { $identityKnown = $false }
@@ -321,7 +393,6 @@ function Invoke-ObservedProcessReap {
                 continue
             }
             if (-not $sameProcess) {
-                # Not what was observed. Left alone, and reported, never killed.
                 $unconfirmed++
                 $verified = $false
                 break
@@ -344,6 +415,38 @@ function Invoke-ObservedProcessReap {
         terminated = $terminated
         identity_unconfirmed = $unconfirmed
     }
+}
+
+# Confirms that each recorded pid no longer holds a PowerShell, with the
+# lookup injected so the failure path can be tested. A lookup that throws is
+# reported as unverified: not being able to ask is not an answer, and must
+# not read as "the process is gone".
+function Test-RecordedChildGone {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$ProcessId,
+        [Parameter(Mandatory = $true)][scriptblock]$ReadByProcessId,
+        [ValidateRange(1000, 60000)][int]$TimeoutMilliseconds = 10000
+    )
+
+    $gone = $true
+    $verified = $true
+    foreach ($id in $ProcessId) {
+        $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+        while ($true) {
+            $still = $null
+            $queryFailed = $false
+            try { $still = @(& $ReadByProcessId $id) } catch { $queryFailed = $true }
+
+            if ($queryFailed) {
+                $verified = $false
+                break
+            }
+            if ($still.Count -eq 0) { break }
+            if ([DateTime]::UtcNow -gt $deadline) { $gone = $false; break }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    return [pscustomobject]@{ gone = $gone; verified = $verified }
 }
 
 # taskkill under its own limit. Left unbounded it is simply one more way for
@@ -398,9 +501,8 @@ function Invoke-ProcessTreeTermination {
 # folded into a clean result.
 #
 # The reap runs in finally, so a failure anywhere after the children were
-# observed still ends them. The original exception is left to propagate: the
-# finally records what the reap did in script scope instead of returning it,
-# and never throws on its own.
+# observed still ends them. Nothing in that block may throw, because a new
+# exception there would replace whatever is already on its way out.
 function Invoke-SumiGuardTestProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FileName,
@@ -498,11 +600,9 @@ function Invoke-SumiGuardTestProcess {
         }
     }
     finally {
-        # The reap is guaranteed here, including on the paths that threw. It
-        # runs before the tree kill so that the children this run pinned are
-        # ended by their own identity rather than incidentally. Nothing in
-        # this block is allowed to throw, because that would replace whatever
-        # exception is already on its way out.
+        # The reap is guaranteed here, including on the paths that threw, and
+        # runs before the tree kill so the children this run pinned are ended
+        # by their own identity rather than incidentally.
         if ($null -eq $reap) {
             try {
                 $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
@@ -524,10 +624,14 @@ function Invoke-SumiGuardTestProcess {
 
         foreach ($item in $observed) {
             try { $item.handle.Dispose() } catch {
-                Write-Verbose 'Observed child handle was already disposed.'
+                Write-Verbose 'Observed child handle was already released.'
             }
         }
-        $process.Dispose()
+
+        # Releasing the launcher must not become the reason this call fails.
+        try { $process.Dispose() } catch {
+            Write-Verbose 'Launcher process object was already released.'
+        }
     }
 
     return [pscustomobject][ordered]@{
@@ -755,6 +859,111 @@ try {
         }
     }
 
+    # Controls for the registration decision. The two failures that matter
+    # here cannot be provoked for real on demand, so the two operations that
+    # can fail are injected. The process under test is this one, which makes
+    # the happy path a real pin of a real process rather than a mock.
+    try {
+        $script:stage = 'assert/registration-controls'
+        $selfRow = @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$PID" -ErrorAction Stop)[0]
+        $selfCreated = [DateTime]$selfRow.CreationDate
+        $openSelf = { param($id) [System.Diagnostics.Process]::GetProcessById($id) }
+        $readSelf = { param($id) @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop)[0] }
+
+        # Happy path: the pid is pinned and handed back with its start time.
+        $pinned = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
+            -OpenProcess $openSelf -ReadCurrent $readSelf
+        $pinnedOk = ($pinned.action -ceq 'record') -and ($null -ne $pinned.handle)
+        if ($pinnedOk) {
+            # The handle must already be acquired, not acquired lazily later.
+            $pinnedOk = ($null -ne $pinned.handle.SafeHandle) -and
+                (-not $pinned.handle.SafeHandle.IsInvalid) -and
+                ($pinned.started -eq $pinned.handle.StartTime)
+            $pinned.handle.Dispose()
+        }
+        $script:stage = 'add/LIVE_CHILD_IS_PINNED_WITH_AN_ACQUIRED_HANDLE'
+        Add-Result 'LIVE_CHILD_IS_PINNED_WITH_AN_ACQUIRED_HANDLE' $pinnedOk -Observed @{
+            action = [string]$pinned.action; reason = [string]$pinned.reason }
+
+        # The pid changed hands between the two reads that bracket the handle.
+        # It must not be recorded as ours.
+        $shifted = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated.AddMilliseconds(-1) `
+            -OpenProcess $openSelf -ReadCurrent $readSelf
+        $script:stage = 'add/IDENTITY_CHANGE_IS_NOT_RECORDED'
+        Add-Result 'IDENTITY_CHANGE_IS_NOT_RECORDED' (
+            ($shifted.action -ceq 'unreliable') -and
+            ($shifted.reason -ceq 'IDENTITY_CHANGED') -and
+            ($null -eq $shifted.handle)) -Observed @{
+                action = [string]$shifted.action; reason = [string]$shifted.reason }
+
+        # No process holds the id. Nothing to clean up, and not an error.
+        $absent = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
+            -OpenProcess { param($id) throw [System.ArgumentException]::new("no process $id") } `
+            -ReadCurrent $readSelf
+        $script:stage = 'add/ABSENT_PROCESS_IS_SKIPPED_NOT_FAILED'
+        Add-Result 'ABSENT_PROCESS_IS_SKIPPED_NOT_FAILED' (
+            ($absent.action -ceq 'skip') -and ($absent.reason -ceq 'PROCESS_NOT_RUNNING')) -Observed @{
+                action = [string]$absent.action; reason = [string]$absent.reason }
+
+        # Access denied is not "already gone". The child may be running and
+        # we cannot say what it is, so the snapshot has to be unreliable.
+        $denied = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
+            -OpenProcess { param($id) throw [System.UnauthorizedAccessException]::new("denied for $id") } `
+            -ReadCurrent $readSelf
+        $script:stage = 'add/OPEN_DENIED_IS_NOT_TREATED_AS_EXITED'
+        Add-Result 'OPEN_DENIED_IS_NOT_TREATED_AS_EXITED' (
+            ($denied.action -ceq 'unreliable') -and ($denied.reason -ceq 'OPEN_FAILED')) -Observed @{
+                action = [string]$denied.action; reason = [string]$denied.reason }
+
+        # The confirming read itself failing is also unreliable, never a pin.
+        $recheckFailed = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
+            -OpenProcess $openSelf `
+            -ReadCurrent { param($id) throw [System.InvalidOperationException]::new("cim unavailable for $id") }
+        $script:stage = 'add/RECHECK_FAILURE_IS_NOT_A_PIN'
+        Add-Result 'RECHECK_FAILURE_IS_NOT_A_PIN' (
+            ($recheckFailed.action -ceq 'unreliable') -and
+            ($recheckFailed.reason -ceq 'RECHECK_FAILED') -and
+            ($null -eq $recheckFailed.handle)) -Observed @{
+                action = [string]$recheckFailed.action; reason = [string]$recheckFailed.reason }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_REGISTRATION_CONTROLS' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # Control: a lookup that cannot run is not evidence of anything. The
+    # confirmation used by the reap control below must report that it could
+    # not verify, rather than concluding the process is gone.
+    try {
+        $script:stage = 'assert/verification-failure-control'
+        $cannotAsk = Test-RecordedChildGone -ProcessId @($PID) `
+            -ReadByProcessId { param($id) throw [System.InvalidOperationException]::new("cim unavailable for $id") } `
+            -TimeoutMilliseconds 2000
+        $canAsk = Test-RecordedChildGone -ProcessId @($PID) `
+            -ReadByProcessId { param($id) @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop) } `
+            -TimeoutMilliseconds 2000
+        $script:stage = 'add/UNAVAILABLE_LOOKUP_IS_NOT_PROOF_OF_TERMINATION'
+        Add-Result 'UNAVAILABLE_LOOKUP_IS_NOT_PROOF_OF_TERMINATION' (
+            (-not [bool]$cannotAsk.verified) -and
+            # A lookup that does work still finds this process running, so
+            # "gone" is not something the control hands out for free either.
+            [bool]$canAsk.verified -and (-not [bool]$canAsk.gone)) -Observed @{
+                unavailable_verified = [bool]$cannotAsk.verified
+                available_verified = [bool]$canAsk.verified
+                available_gone = [bool]$canAsk.gone
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_VERIFICATION_FAILURE_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
     # Control: identity is exact. A start time that is merely close is a
     # different process, and a near miss is the case a tolerance would wave
     # through, so it is the one worth testing. This test's own process stands
@@ -788,8 +997,6 @@ try {
             $selfAlive -and
             [int]$nearMissReap.identity_unconfirmed -eq 1 -and
             [int]$nearMissReap.terminated -eq 0 -and
-            # Unconfirmed is a failure, not a quiet skip: something is running
-            # that the helper cannot account for.
             (-not [bool]$nearMissReap.verified)) -Observed @{
                 self_alive = $selfAlive
                 identity_unconfirmed = [int]$nearMissReap.identity_unconfirmed
@@ -841,26 +1048,16 @@ try {
 
         $recordedIds = @($script:LastObservedChildIds)
         $reapResult = $script:LastReapResult
-        # Every pid the run pinned must be gone, checked by name as well so a
-        # pid handed to something else afterwards is not read as a survivor.
-        $allGone = $true
-        foreach ($id in $recordedIds) {
-            $deadline = [DateTime]::UtcNow.AddSeconds(10)
-            while ($true) {
-                $still = @()
-                try {
-                    $still = @(Get-CimInstance -ClassName Win32_Process `
-                        -Filter "ProcessId=$id" -ErrorAction Stop |
-                        Where-Object { [string]$_.Name -like 'powershell*' })
-                }
-                catch {
-                    $still = @()
-                }
-                if ($still.Count -eq 0) { break }
-                if ([DateTime]::UtcNow -gt $deadline) { $allGone = $false; break }
-                Start-Sleep -Milliseconds 50
-            }
-        }
+        # Checked by name as well, so a pid handed to something else
+        # afterwards is not read as a survivor. A lookup that cannot run
+        # leaves this unverified, and an unverified check fails the case.
+        $confirmation = Test-RecordedChildGone -ProcessId $recordedIds `
+            -ReadByProcessId {
+                param($id)
+                @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop |
+                    Where-Object { [string]$_.Name -like 'powershell*' })
+            } `
+            -TimeoutMilliseconds 10000
 
         $script:stage = 'add/OBSERVED_CHILD_IS_REAPED_WHEN_THE_RUN_THROWS'
         Add-Result 'OBSERVED_CHILD_IS_REAPED_WHEN_THE_RUN_THROWS' (
@@ -873,7 +1070,8 @@ try {
             [bool]$reapResult.gone -and
             [bool]$reapResult.verified -and
             (-not [bool]$script:LastReapFailed) -and
-            $allGone) -Observed @{
+            [bool]$confirmation.verified -and
+            [bool]$confirmation.gone) -Observed @{
                 caught_type = $caughtType
                 caught_message = $caughtMessage
                 recorded_children = $recordedIds.Count
@@ -881,7 +1079,8 @@ try {
                 reap_gone = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.gone })
                 reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
                 reap_failed = [bool]$script:LastReapFailed
-                all_recorded_children_gone = $allGone
+                confirmation_gone = [bool]$confirmation.gone
+                confirmation_verified = [bool]$confirmation.verified
             }
     }
     catch {
