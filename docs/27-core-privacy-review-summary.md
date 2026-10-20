@@ -1,0 +1,285 @@
+# Core Privacy / ReadOnly API / 容量上限 統合レビュー要約
+
+## この文書の位置付け
+
+PR #8、#9、#10を一体として最終確認するための読み取りベースのレビュー要約です。マージ判断に必要な
+事実、証拠が属するSHA、未実施の範囲、戻し方を1か所に集約します。
+
+2026-10-20、PR #8、#9、#10をこの順でmasterへマージしました。
+実装基準は `3db6ab022548e080c04a4f568f685fe6b37f380b` です。
+以下の「候補」はマージ前の検証スナップショットを指します。その製品コードとテストはmasterへ取り込み済みです。
+本PR #11は文書のみの更新で、W2実施・運用開始・Releaseを意味しません。
+
+## 対象SHAとPR依存関係
+
+マージ前の公開master基準は `36e56934d26fdc7ce2296ef39a6c50113dc405b8` でした。
+以下は当初のPR依存関係です。#9、#10、#11のbaseは各マージ前にmasterへ明示変更しました。
+
+| 段階 | PR | ブランチ | head SHA | base |
+|---|---|---|---|---|
+| マージ前基準 | — | `master` | `36e56934d26fdc7ce2296ef39a6c50113dc405b8` | — |
+| 1 | [#8](https://github.com/ponponpon888/sumi-guard/pull/8) | `integration/core-privacy-governance-ci` | `8ae5b98` | `master` |
+| 2 | [#9](https://github.com/ponponpon888/sumi-guard/pull/9) | `security/readonly-api-surface` | `43f9d64` | `integration/core-privacy-governance-ci` |
+| 3 | [#10](https://github.com/ponponpon888/sumi-guard/pull/10) | `security/metadata-log-limits` | `8f46ad3` | `security/readonly-api-surface` |
+| 4 | この文書 | `docs/core-privacy-review-summary` | 本PRのhead | `security/metadata-log-limits` |
+
+依存関係は **#8 → #9 → #10 → この文書PR** です。PR #8はさらに個別PR #5（Core Privacy）、#6
+（security governance）、#7（CI hardening）を取り込んだ統合候補であり、個別PRと#8を重複して
+マージしない方針です。
+
+マージ前のmaster基準から製品候補 `8f46ad3` までの差分は17ファイル、1,406挿入、31削除でした。ローカルの `master` ref が
+`origin/master` より古い場合、`git diff master..HEAD` は候補の変更量を過大に表示します。比較は
+対象の基準SHAを明示してください。現在の `origin/master` はマージに伴って進んでいます。
+
+## masterへ取り込まれた動作
+
+### 既定MetadataOnlyの適用範囲
+
+**MONITORフックの既定** です。`hooks/Invoke-SumiGuardMonitorHook.ps1` は `-CaptureCommandBody`
+（既定off）を取り、`-MetadataOnly:(-not $CaptureCommandBody)` としてアダプタを呼びます。したがって
+フック経由では、明示指定がない限り本文を保存せずハッシュとメタデータだけを記録します。
+
+**直接アダプタ呼出しの契約は別です。** `Save-SumiGuardExecutionIntent` の `-MetadataOnly` は既定off
+のスイッチのままで、直接呼び出した場合は従来どおり本文保存経路に入ります。この2つを同じ既定として
+説明しないでください。
+
+### ReadOnly公開API
+
+`SumiGuard.ExecutionAdapter.ReadOnly` の公開関数は**2件**です。
+
+- `Get-SumiGuardExecutionRecord`
+- `Get-SumiGuardCollectionFailureNotice`
+
+これは公開一覧の制限です。モジュール内部には書込み関数が残っており、内部関数の実行不能やOS権限
+境界を主張するものではありません。
+
+### メタデータログの容量上限
+
+`events.ndjson`、`failures.ndjson`、`retention.ndjson` の**3種類それぞれに16MiB**（16,777,216バイト）
+の上限があります。
+
+- 判定は既存の書込みロック内で、UTF-8バイト数と改行を含めた追記後サイズに対して行います。
+- 上限ちょうどは許可し、超過は**追記前に拒否**します。拒否時に対象ファイルのサイズと内容は変わりません。
+- **削除、切詰め、自動ローテーションは行いません。** 上限に達したログは、容量超過を記録失敗として
+  返し続けます。暗黙の成功や `NO_RECORD` へ格下げしません。
+- 上限値はLocalStoreの本文容量（1件1MiB、合計250MiB、保持30日）とは別の指標です。混同しないでください。
+
+### retentionの非原子性（公開masterの既存の性質）
+
+本文削除とtombstone記録は複数ファイルにまたがり、**原子的ではありません**。本文を削除した後に
+retentionログへtombstoneを書けなかった場合、
+
+- 清掃結果は `RETENTION_CLEANUP_PARTIAL` となり、成功扱いにはなりません。
+- `retention_tombstone_failure_count` に失敗件数が残ります。
+- 以降その記録の参照状態は `REFERENCE_MISSING` になり得ます。
+
+**これは今回追加した制限ではありません。** `RETENTION_CLEANUP_PARTIAL`、`REFERENCE_MISSING`、
+`retention_tombstone_failure_count` はいずれも公開masterに既に存在します。候補が追加したのは、
+retentionログが容量上限に達した場合にこの区別が保たれることの検証（`#10`）であり、原子性そのものの
+改善ではありません。
+
+## 実施済みのテストとCI、証拠が属するSHA
+
+証拠は実行されたSHAに属します。後続SHAでの再実行に置き換えないでください。
+
+| 証拠 | 属するSHA | 内容 |
+|---|---|---|
+| CI run [39310044529](https://github.com/ponponpon888/sumi-guard/actions/runs/39310044529) | `8ae5b98`（#8） | 3ジョブPASS。DPAPI非依存試験12件実行／3件除外 |
+| CI run [39316609193](https://github.com/ponponpon888/sumi-guard/actions/runs/39316609193) | `43f9d64`（#9） | 3ジョブPASS。12件実行／3件除外 |
+| CI run [39354719330](https://github.com/ponponpon888/sumi-guard/actions/runs/39354719330) | `8f46ad3`（#10） | 3ジョブPASS。13件実行／3件除外 |
+| `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1` 5/5 PASS | `8f46ad3` | CI・ローカル通常PowerShell 5.1の双方。CI実行対象に登録済み |
+| `tests/Invoke-ReadOnlyCliTests.ps1` 5/5 PASS | `43f9d64`（#9） | ローカル通常PowerShell 5.1のみ。**CIでは除外**（DPAPI CurrentUser依存）。下の「DPAPI依存試験の実施状況」参照 |
+| ReadOnly公開API 2関数の契約確認 | `43f9d64` | manifest、`Export-ModuleMember`、実インポート結果が一致 |
+| `tests/Invoke-ExecutionAdapterIntegrationTests.ps1` 12/12 PASS | `4e6ada5`（#5） | ローカル通常PowerShell 5.1.26100.9711のみ。**CIでは除外**（DPAPI CurrentUser依存）。後述の `87e6fb2` でも12/12 PASSを追加確認。下の「DPAPI依存試験の実施状況」参照 |
+
+`#10` の容量上限テストが確認する5件は次のとおりです。
+
+| テスト | 主な証跡 |
+|---|---|
+| `metadata_log_boundaries_and_utf8_accounting` | 上限ちょうど16,777,216バイトを受理、超過をEvent/Failure/Retentionすべてで拒否、拒否後のサイズ・ハッシュ不変 |
+| `concurrent_append_preserves_limit` | 4プロセス同時追記で3件成功・1件容量超過拒否、最終15,729,048バイト ≤ 16,777,216 |
+| `metadata_only_capacity_failure_is_collection_failure` | `EVENT_SAVE_FAILED_METADATA_ONLY` / `COLLECTION_FAILED` / denyなし、失敗通知は `SAVED` |
+| `full_failure_log_terminates_without_recursion` | 失敗ログ満杯時も再帰せず `failure_notice_status=FAILED` で即時終了 |
+| `retention_log_failure_is_partial_not_success` | `RETENTION_CLEANUP_PARTIAL`、tombstone失敗1件、後続参照は `REFERENCE_MISSING` |
+
+### CIが言えないこと
+
+CIはWindows PowerShell 5.1の構文・UTF-8 BOM、PSScriptAnalyzer、DPAPI非依存の合成試験だけを確認します。
+DPAPI CurrentUser依存の3件は明示的に除外されています。CIの合格から、運用ストア、実資格情報、
+恒久フック、DPAPI運用境界、外部監査基準への適合は導けません。
+
+### DPAPI依存試験の実施状況（追加実行前の履歴）
+
+CI除外の3件は「CIで検証されない」だけで、「未実施」ではありません。通常のWindows PowerShellで
+得た結果は、それを得たSHAの証拠として有効です。下表はSHAごとに実施済みと未確認を分けたものです。
+
+| 試験 | 実施済みの結果 | 証拠が属するSHA | 候補HEAD `8f46ad3` での状況 |
+|---|---|---|---|
+| `Invoke-ExecutionAdapterIntegrationTests.ps1` | **12/12 PASS**（`success=true`、`failure=null`、`test_root_cleaned=true`、通常PowerShell 5.1.26100.9711、2026-10-20） | `4e6ada5`（PR #5） | 試験ファイルは `4e6ada5` と同一（blob `ac5792b`）。ただし被試験側の `SumiGuard.ExecutionAdapter.psm1` に16MiB上限が加わっているため、HEADでの再実行は未確認 |
+| `Invoke-ReadOnlyCliTests.ps1` | **5/5 PASS**（`success=true`、`failure=null`、`test_material_removed=true`、通常PowerShell、2026-10-20） | `43f9d64`（PR #9） | 試験ファイルは `43f9d64` と同一（blob `7ec9a2d`）。被試験側に16MiB上限が加わっているため、HEADでの再実行は未確認 |
+| `Invoke-LocalStoreTests.ps1` | 候補のいずれのSHAでも実行記録なし | — | 未確認。ただし `src/SumiGuard.LocalStore/` は公開masterから無変更で、候補はこのモジュールを変更していません |
+
+この2件のPASSを「未実施」へ戻さないでください。いずれも一時領域の合成データによる試験であり、
+次のものとは別です。
+
+- **ACL初期化失敗との区別**: Codex実行環境では一時ストア初期化が `ACL_RESTRICTION_FAILED` で停止
+  しましたが、通常のWindows PowerShellでの上記実行では再現していません。環境依存の停止を試験結果の
+  失敗として扱いません。
+- **運用ストア接続との区別**: 上記はいずれも運用ストア、実資格情報、恒久フックを使っていません。
+  PASSは合成データ上の契約確認であり、運用ストアへ接続した検証の成功ではありません。この2つを
+  同じ根拠として扱わないでください。
+
+### 最新候補での追加実行（2026-10-20）
+
+ユーザー提示の通常Windows PowerShell実行結果により、`87e6fb29e9747a5dab937fbbd577eb9775938bf0`
+でDPAPI依存3試験の計23/23 PASSを確認しました。ExecutionAdapter実行前にHEAD一致とcleanを確認し、
+以後は同worktreeの絶対パスで実行しています。この間、変更操作は報告されていません。
+
+| 試験 | 結果 | 確認 |
+|---|---|---|
+| `Invoke-ExecutionAdapterIntegrationTests.ps1` | 12/12 PASS | MetadataOnly本文0件、ハッシュ一致、denyなし、子プロセス回収、一時領域清掃 |
+| `Invoke-ReadOnlyCliTests.ps1` | 5/5 PASS | 公開2関数、ファイル不変、復号なし、平文非包含、lock新規作成なし、一時領域清掃 |
+| `Invoke-LocalStoreTests.ps1` | 6/6 PASS | DPAPI往復とACL、平文フォールバックなし、容量境界・同時追記、削除範囲、一時領域清掃 |
+
+各出力は `success=true`、`failure=null` です。ExecutionAdapterとLocalStoreの出力のPowerShellは
+`5.1.26100.9711` です。過去のSHAに属する結果を置き換えず、追加の証拠として記録します。
+合成データ・一時ストアの検証であり、W2のホスト接続や運用ストアでの検証成功ではありません。
+
+## 進捗と未実施の範囲
+
+### W0: 完了（読み取り棚卸し）
+
+W0は、ユーザーがこのチャットに提示したPC側Codexの実施報告に基づく、Windows端末上の読み取り棚卸しです。
+10月18日のコード監査とは別の作業であり、W0の報告がPR #2に記録されているとは確認していません。
+
+確認範囲はWindows／PowerShellの環境、元worktreeと統合worktreeのGit状態、文書・実装から特定した
+フック設定と既知ストアパスです。元worktreeは `ec17286`、統合worktreeは `8ae5b98` でcleanでした。
+
+- `%USERPROFILE%\.codex\hooks.json` は存在せず、`config.toml` 内ではSUMI Guardのスクリプト／実行command登録を確認できませんでした。
+- `%LOCALAPPDATA%\SUMI Guard\body-store` と、元・統合worktreeの `.demo-data\body-store`／`execution-store` は存在しませんでした。既存ストアの所有者・ACLを実測した結果はありません。
+- 手動デモが旧系統の保護フックを一時コピーする経路と、統合候補のMONITORフックを区別しました。
+
+確認は特定できたパスに限定し、PC全体やTEMP配下の再帰検索は行っていません。
+したがって、任意の場所にフック登録やストアが存在しないという証明ではありません。
+W0ではコード・設定・ストアを変更せず、フック／モジュールの実行・import・復号・ACL変更・昇格も行っていません。
+実フック接続や運用端末での動作確認を完了したという意味ではありません。
+
+### W2: 保留（起動試行とフック未到達を区別する）
+
+W2は未着手ではありません。次の3つを区別してください。
+
+| 区分 | 状態 |
+|---|---|
+| 起動試行 | 実施済み。W2の接続を起動しようとする試行は行われました。 |
+| フック到達 | **未到達。** フックまで到達しなかったため、フックイベントも記録も生成されていません。W2のフック動作を検証できた証拠はありません。 |
+| 現在の保留理由 | 認証条件が未成立であること。起動試行が失敗したことではなく、この条件が揃っていないために保留を継続しています。 |
+
+「起動を試みたが到達しなかった」ことと「着手していない」ことは別です。前者が事実です。同時に、
+起動試行では無効な引数による終了と、その修正後のapp-server初期化時のアクセス拒否を確認しました。
+フックへ到達していないため、Guardの保存成功・保存失敗を判定した試験結果ではありません。実運用ストアや
+実ホスト接続の検証成功として扱える証拠はありません。
+
+なお、PR #5の実フック→実アダプタ統合試験は、子Windows PowerShellへ合成イベント1件を入力する試験です。
+Codexホストからのフック発火を確認するW2とは別であり、W2成功の証拠として扱いません。
+
+### 未実施
+
+- 運用ストアの変更、恒久フック登録、Release作成・公開配布。
+- 認証・信頼設定の変更。
+- **非公開脆弱性報告窓口: 有効状態を確認できていません。** 確認時点でリポジトリAPIに
+  `private_vulnerability_reporting` の状態は現れず、`secret_scanning` と
+  `dependabot_security_updates` は `disabled` でした。有効な非公開報告窓口を案内できる状態では
+  ありません。
+
+## マージ候補と、運用開始・公開配布の条件
+
+これらは別の判断です。片方の達成をもう片方の根拠にしないでください。
+
+### マージ候補として満たしているもの
+
+- 候補HEADで3ジョブCI PASS、対象テストの結果と属するSHAが特定済み。
+- 公開masterの既定動作と候補の動作を文書で区別済み。
+- schema 1、実行前イベントの意味、直接アダプタ呼出し契約を変更していない。
+- PR #2の署名・受領証・監査整合性の実装は混入していない。
+
+### 運用開始に追加で必要なもの（未達）
+
+- W2の認証条件の成立と、フックへ到達したうえでの実ホスト接続の検証。
+- DPAPI依存3試験は通常PowerShellの合成ストアで23/23 PASS。実運用のユーザー境界・保存先については別途確認が必要です。
+- 運用ストアのACL、DPAPIユーザー境界、恒久フック登録、通知失敗、復旧手順を固定の合成データで確認。
+- 容量上限に達した後の運用手順（削除・ローテーションを行わない前提での運用設計）の決定。
+
+### 公開配布に追加で必要なもの（未達）
+
+- Release tag、安定版番号、サポート範囲の定義。
+- 有効な非公開脆弱性報告窓口の用意と、`SECURITY.md` の更新。
+- 外部監査基準を主張する場合は、署名・鍵管理・失効・受領証・改ざん不能な外部保管の設計と実装。
+  いずれも候補に含まれていません。
+
+## マージ記録と文書の同期
+
+| PR | マージ前head | masterのマージコミット |
+|---|---|---|
+| #8 | `8ae5b98` | `4b2915c500a5058572836a9e7f826206a7ac81a8` |
+| #9 | `43f9d64` | `e2353f442cb18169fdfec376d6e9a1b93904685b` |
+| #10 | `8f46ad3` | `3db6ab022548e080c04a4f568f685fe6b37f380b` |
+
+すべてmerge方式で元コミット履歴を保持しました。#9と#10はbaseをmasterへ変更後、元の4ファイルだけが
+差分に残ることを確認しました。本PR #11もbaseをmasterへ変更し、5文書だけを更新します。
+README、SECURITY、THREAT_MODEL、CONTRIBUTINGの「master未反映」という説明を実態に合わせて直しました。
+PR #5/#6/#7の変更は#8経由で取り込み済みで、個別PRを重複してマージしません。
+PR #2の残りは含めていません。`docs/27` の番号整理が将来必要になる点は引き続き残ります。
+
+今後もbaseの自動繰上げを前提にせず、マージ直前に `baseRefName`・head・差分を読み直してください。
+
+## 元へ戻す方法
+
+共有履歴に対する `git reset` と `git push --force` は使いません。
+
+- **マージ前:** 対象PRをDraftのまま閉じ、リモートブランチを削除します。`master` は変化しないため
+  戻す操作は不要です。ローカルworktreeは `git worktree remove` で破棄します。
+- **マージ後:** revertの形は実際のマージ方式で変わります。**先に親の数を確認してから**コマンドを
+  選びます（下記「マージ後のrevert手順」）。履歴は書き換えません。
+- **複数段を戻す場合:** 新しいマージから古いマージへ向かって順に revert します。`#10` → `#9` → `#8`
+  の順です。逆順にすると打ち消しが競合します。各コミットについて親の数を個別に確認します。
+- revert後は、上の「マージ後に説明が古くなる箇所」を逆向きに戻す必要があります。文書が実態より
+  進んだ状態で残らないようにしてください。
+
+### マージ後のrevert手順
+
+今回の#8、#9、#10はmerge方式です。戻す場合は対象のマージコミットと、マージ直前のmasterを表す
+第1親をGitHubのマージ記録およびコミットの親一覧で照合してから `git revert -m 1 <merge-sha>` を使います。
+現在のmasterの祖先かどうかだけでは親の役割を判定できません（両方の親が祖先になり得ます）。
+revertはここでは実行していません。
+
+将来squash方式を使う場合は単一のsquashコミットを、rebase方式ならmasterへ追加された対応コミット群を
+特定して新しい順に戻します。単一親という理由だけでPR末尾の1コミットを戻せば全変更が取り消せるとは扱いません。
+
+## マージ前のレビューで確認した事項（履歴）
+
+| 確認項目 | 結果 |
+|---|---|
+| ReadOnly公開関数が2件のまま | PASS。manifest、`Export-ModuleMember`、実インポート結果の3点が一致（実インポートで2件、通常アダプタは6件） |
+| PR #2の署名・受領証等の混入 | なし。PR #2固有の `docs/27`〜`docs/32`、署名・監査整合性のテストとtoolsはいずれも候補に存在しない。4文書の言及は「masterにない／実装済みと扱わない」という除外の記述のみ |
+| 16MiB上限が3種のログに適用 | PASS。`MetadataLogMaxBytes = 16MB` を通常・ReadOnly両モジュールが持ち、`Event`/`Failure`/`Retention` の3経路で同じ判定を通る |
+| 容量超過時の削除・切詰め・ローテーション | なし。該当する実装を確認できず、拒否のみ |
+| 既定MetadataOnlyの適用範囲と直接呼出し契約の区別 | 実装と説明が一致。フックは `-CaptureCommandBody` 既定offでMetadataOnly、アダプタの `-MetadataOnly` は既定offのまま |
+| retention非原子性とPARTIAL／REFERENCE_MISSING | 実装と説明が一致。該当テストで確認済み |
+| 新規テストのCI登録 | PASS。`$includedTests` は13要素で、容量上限テストを含む。CIログの実行件数13と一致 |
+| 文書の相対リンク | 全件解決（`SECURITY.md`→2件、`THREAT_MODEL.md`→1件、`CONTRIBUTING.md`→1件、および本文中の参照先） |
+
+### 指摘事項
+
+1. **ローカル `master` ref が古い（レビュー手順の注意／コード欠陥ではない）。** ローカル `master` が
+   `ec17286` を指す状態では、`git diff master..HEAD` が38ファイル・4,176挿入と表示され、実際の候補
+   差分（17ファイル・1,406挿入）より大きく見えます。`origin/master` を基準にしてください。
+2. **CI試験一覧の区切りが不統一（軽微・本PRでは修正しない）。**
+   `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1` の `$includedTests` は、末尾2要素の間だけ
+   カンマがなく改行区切りになっています。`@()` 内では改行区切りも有効で、要素数13とCIの実行件数13を
+   確認済みのため動作上の問題はありません。文書作業に無関係な修正を混ぜないため、ここでは直して
+   いません。
+3. **DPAPI依存試験はCIで検証されない。** `#9` の主要な根拠である `Invoke-ReadOnlyCliTests.ps1` は
+   CI除外対象です。この証拠はローカル通常PowerShellの実行結果のみで、運用端末と同じユーザー境界での
+   確認は別途必要です。
+
+上記以外に、実装と説明の不一致は確認できませんでした。
