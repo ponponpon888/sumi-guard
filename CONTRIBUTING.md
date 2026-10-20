@@ -11,9 +11,16 @@ SUMI Guardは、AI開発操作の実行前入力、評価、OS観測を分離し
 
 ## 統合検証候補
 
-`integration/core-privacy-governance-ci` は、確認済みmasterからPR #5（Core Privacy）、#6（security governance）、
-#7（CI hardening）を順に取り込んだ検証用ブランチです。ここで確認できるMetadataOnly、ACL拒否、CIトリガー条件は
-公開masterの既定動作ではありません。個別PRと統合PRを重複してマージせず、統合候補の結果を確認してから次の判断を行ってください。
+候補は確認済みmasterへ次の順で積まれています。baseが直前のPRのブランチなので、順序を飛ばせません。
+
+1. `integration/core-privacy-governance-ci`（PR #8）: PR #5（Core Privacy）、#6（security governance）、#7（CI hardening）を順に取り込んだ統合ブランチ。
+2. `security/readonly-api-surface`（PR #9）: ReadOnly派生モジュールの公開APIを読取り用2関数へ限定。
+3. `security/metadata-log-limits`（PR #10）: 3種NDJSONログの各16MiB上限。削除・切詰め・自動ローテーションは追加しない。
+
+ここで確認できるMetadataOnly、ACL拒否、CIトリガー条件、ReadOnly公開API2件、容量上限は公開masterの既定動作ではありません。
+既定MetadataOnlyはMONITORフックに適用され、直接アダプタ呼出しの本文保存契約とは区別します。個別PRと統合PRを重複してマージせず、
+統合候補の結果を確認してから次の判断を行ってください。対象SHA、証拠が属するSHA、マージ順序、戻し方は
+[docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) を参照してください。
 
 ## データと隔離
 
@@ -34,6 +41,7 @@ SUMI Guardは、AI開発操作の実行前入力、評価、OS観測を分離し
 - `tests/Invoke-AssessmentStoreTests.ps1`: 評価ストアの状態、相関、容量、本文非包含。
 - `tests/Invoke-ManagedAssessmentVerificationTests.ps1` と `tests/Invoke-ManagedAssessmentVerificationConnectionTests.ps1`: 管理下実行の照合境界。
 - `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1`: 無害な子プロセスを使うランナー分岐。
+- `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1`: メタデータログ16MiB上限の境界、同時追記、失敗通知満杯、retention途中失敗。DPAPIに依存せず、CIの実行対象です。
 - `tests/Invoke-LocalStoreTests.ps1`、`tests/Invoke-ExecutionAdapterIntegrationTests.ps1`、`tests/Invoke-ReadOnlyCliTests.ps1`: DPAPI CurrentUserに依存するため、GitHub CIでは除外されるローカル試験。
 
 DPAPI非依存の既存CI試験は、Windows PowerShell 5.1で次のランナーから実行されます。

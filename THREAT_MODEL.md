@@ -7,8 +7,8 @@
 ### 公開済み・未マージ・設計の区別
 
 - **公開済み**: `master` に含まれる `hooks/`、`src/`、`tools/`、既存 `tests/`、`.github/workflows/`。
-- **未マージ**: Draft PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)。PR #5の既定MetadataOnlyとACL保護、PR #7のCIトリガー変更は公開masterの既定動作ではありません。
-- **統合検証候補**: `integration/core-privacy-governance-ci` は、確認済みmasterからPR #5、#6、#7を順に取り込んだ別スナップショットです。候補ではMONITORの既定MetadataOnly、AssessmentStoreの不正ACL拒否（自動修復なし）、`push`をmasterだけにするCI条件を扱いますが、公開masterの制御として数えません。
+- **未マージ**: Draft PR [#2](https://github.com/ponponpon888/sumi-guard/pull/2)、[#5](https://github.com/ponponpon888/sumi-guard/pull/5)、[#6](https://github.com/ponponpon888/sumi-guard/pull/6)、[#7](https://github.com/ponponpon888/sumi-guard/pull/7)、[#8](https://github.com/ponponpon888/sumi-guard/pull/8)、[#9](https://github.com/ponponpon888/sumi-guard/pull/9)、[#10](https://github.com/ponponpon888/sumi-guard/pull/10)。PR #5の既定MetadataOnlyとACL保護、PR #7のCIトリガー変更、PR #9のReadOnly公開API限定、PR #10のメタデータログ容量上限は、いずれも公開masterの既定動作ではありません。
+- **統合検証候補**: 確認済みmasterへPR #8 → #9 → #10を順に積んだ別スナップショットです（head `8f46ad3`）。候補ではMONITORフックの既定MetadataOnly、AssessmentStoreの不正ACL拒否（自動修復なし）、`push`をmasterだけにするCI条件、ReadOnly公開API2件、3種NDJSONログの各16MiB上限と非原子的なretentionを扱いますが、公開masterの制御として数えません。候補の既定MetadataOnlyはMONITORフックに適用され、直接アダプタ呼出しの本文保存契約とは区別します。対象SHAと証拠の帰属は [docs/27-core-privacy-review-summary.md](docs/27-core-privacy-review-summary.md) にまとめています。
 - **設計のみ**: `docs/19`、`docs/23`、`docs/24`、`docs/26` に記載された将来の相関、インタープリター検証、ENFORCE_RECORDING等。設計書の存在は実装・運用検証を意味しません。
 
 ## 保護対象
@@ -41,6 +41,8 @@
 | 外部コンテンツやAIホストが不正な入力を渡す | フックはイベント名、ツール名、識別子、`tool_input.command`の存在と型を検証し、無効入力を評価・保存・denyへ補完しない。 | `tests/Invoke-MonitorHookSyntheticTests.ps1`、`tests/Invoke-CommandAssessmentHookIntegrationTests.ps1` | ホスト自体の真正性、呼出し順、設定、対象シェルはフックJSONだけでは証明できない。`TrustedWindowsPowerShellRoute`は管理された呼出し条件でのみ意味を持つ。 |
 | OS観測が短命プロセスや後続入力を取り逃す | OS観測とアプリ側イベントを別記録し、相関不能を`UNMATCHED`等で残す。 | `kit/sumi-guard-prototype/`、`tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1`、`docs/19` | ポーリングは短命プロセスを取り逃し得る。`write_stdin`による後続本文は現行フックで取得できない。常駐監視は未実装。 |
 | ReadOnly表示が記録を変更する | ReadOnly派生モジュールは既存ロックを共有読取で開き、空ストアでロックを新規作成しない設計。通常一覧は本文を返さない。 | `tests/Invoke-ReadOnlyCliTests.ps1`、`docs/22`、`measurements/2026-10-05-readonly-lock-validation.md` | リポジトリ配置後の運用確認、全Windowsファイルシステム差異、管理者による変更耐性は未検証。 |
+| メタデータログが無制限に増え、保存先の容量を圧迫する | 公開masterに追記量の上限判定はない。統合候補は3種NDJSONを各16MiBで判定し、超過を追記前に拒否して記録失敗として返す。削除・切詰め・自動ローテーションは行わない。 | `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1`（候補 `8f46ad3`）、[docs/27](docs/27-core-privacy-review-summary.md) | 上限到達後に記録を継続する手段は候補にもない。容量監視、退避、保管方針は運用側で別途必要。公開masterでは上限自体が未実装。 |
+| 本文削除とtombstone記録の不一致を成功と誤表示する | 公開masterの既存制御。本文削除後にretentionログへtombstoneを書けない場合を `RETENTION_CLEANUP_PARTIAL` とし、`retention_tombstone_failure_count` を残し、参照状態を `REFERENCE_MISSING` として扱う。成功へ格上げしない。 | `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1` の `retention_log_failure_is_partial_not_success`（候補 `8f46ad3` で追加した検証）、`docs/21` | 複数ファイル間の原子性はない。削除済み本文は復元できず、tombstone欠落の補正は手動確認に依存する。候補が追加したのは容量満杯時の検証であり、原子性そのものの改善ではない。 |
 | GitHub CIを運用端末のセキュリティ証明と誤解する | workflowはPowerShell 5.1構文・BOM、PSScriptAnalyzer、DPAPI非依存の合成試験を実行し、DPAPI依存試験を明示的に除外する。 | `.github/workflows/windows-powershell-5.1-check.yml`、`.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`、`docs/25` | CIに運用ストア、実資格情報、恒久フック、DPAPI CurrentUser、実ホストのdeny尊重を持ち込まない。secret scanning、Dependabot、private vulnerability reportingは確認時点で有効と確認できない。 |
 | 外部監査基準に対する証拠の真正性を過大評価する | schema 1、ハッシュ、時刻、状態、相関の意味を記録するが、限界を文書化する。 | `docs/19`、`docs/21`、`docs/24` | 署名、鍵管理、失効、受領証、Audit Integrity、改ざん不能な外部保管はmasterにない。PR #2の提案や将来設計を実装済みと扱わない。 |
 
