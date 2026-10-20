@@ -102,6 +102,10 @@ function Invoke-AdapterPrivateWrite {
 }
 
 function New-ExactMetadataRecord {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Builds and returns an in-memory record and touches nothing outside the caller, so there is no system state for ShouldProcess to guard.')]
     param(
         [Parameter(Mandatory = $true)][long]$TargetBytes,
         [Parameter(Mandatory = $true)][string]$RecordType
@@ -135,6 +139,10 @@ function New-ExactMetadataRecord {
 }
 
 function New-Store {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Fixed fixture setup inside the guarded temporary test root. The suite cannot assert anything without the store, so a confirmation prompt or a -WhatIf skip would leave the capacity cases testing nothing.')]
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $result = Initialize-SumiGuardExecutionStore -Path $Path
@@ -143,6 +151,10 @@ function New-Store {
 }
 
 function New-LocalStore {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Fixed fixture setup inside the guarded temporary test root. The body-store cases cannot assert anything without the store, so a confirmation prompt or a -WhatIf skip would leave them testing nothing.')]
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $result = Initialize-SumiGuardLocalStore -Path $Path
@@ -150,6 +162,10 @@ function New-LocalStore {
 }
 
 function New-WriterChildScript {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Writes the synthetic writer script into the guarded temporary test root as fixed fixture setup. A -WhatIf skip would leave the concurrency case with no child script to run.')]
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $content = @'
@@ -200,6 +216,10 @@ catch {
 }
 
 function Start-WriterProcess {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Starts a synthetic writer child process as fixed fixture setup. The concurrency case exists to observe those processes compete for the metadata log, so a confirmation prompt or a -WhatIf skip would defeat it.')]
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
         [Parameter(Mandatory = $true)][string]$Manifest,
@@ -280,7 +300,13 @@ function Wait-WriterProcess {
     }
 }
 
-function Stop-WriterProcesses {
+function Stop-WriterProcess {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
+        'PSUseShouldProcessForStateChangingFunctions',
+        '',
+        Justification = 'Terminates the synthetic writer child processes this suite started, from finally blocks that must not prompt. A -WhatIf skip would leak the very child processes it exists to clean up.')]
+    param()
+
     foreach ($writer in @($script:activeWriterProcesses.ToArray())) {
         $process = $writer.process
         try {
@@ -394,7 +420,7 @@ try {
         }
     }
     finally {
-        Stop-WriterProcesses
+        Stop-WriterProcess
     }
 
     $metadataFailureStore = Join-Path $testRootFullPath 'metadata-failure-store'
@@ -525,7 +551,7 @@ catch {
     }
 }
 finally {
-    try { Stop-WriterProcesses } catch { $script:childProcessesCleaned = $false }
+    try { Stop-WriterProcess } catch { $script:childProcessesCleaned = $false }
     if (Test-Path -LiteralPath $testRootFullPath) {
         $resolvedForDelete = [System.IO.Path]::GetFullPath($testRootFullPath)
         if ($resolvedForDelete.StartsWith($tempRoot, [StringComparison]::OrdinalIgnoreCase) -and
