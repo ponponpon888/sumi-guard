@@ -33,6 +33,10 @@ $results = New-Object System.Collections.Generic.List[object]
 $script:stage = 'start'
 $failure = $null
 $childStartCount = 0
+# A child that had to be killed on a timeout, or that left something running,
+# is a failure of the run even when every assertion passed.
+$script:timedOutCount = 0
+$script:unreapedCount = 0
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-stdin-' + [Guid]::NewGuid().ToString('N'))
 
 # Built from code points so the bytes under test do not depend on this file's
@@ -100,6 +104,145 @@ function Get-ObservedDiagnostic {
         body_file_count = (Get-RunField -Run $Run -Name 'body_file_count')
         exit_code = (Get-RunField -Run $Run -Name 'exit_code')
     }
+}
+
+# The processes started directly below the given one. Used to find the hook's
+# PowerShell when it is launched under cmd, because waiting on cmd alone says
+# nothing about whether its child is still running.
+function Get-ChildProcessId {
+    param([Parameter(Mandatory = $true)][int]$ParentId)
+
+    # Only the PowerShell this run started. cmd also brings up a console host,
+    # which the OS owns and which can outlive cmd by a moment; counting that
+    # as an unreaped child would report a leak on every passing run.
+    $ids = New-Object System.Collections.Generic.List[int]
+    try {
+        foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
+            if ([string]$entry.Name -like 'powershell*') {
+                $ids.Add([int]$entry.ProcessId)
+            }
+        }
+    }
+    catch {
+        # A process that exits between the query and the read is simply not
+        # listed, which is the same answer as "nothing left to reap".
+        Write-Verbose 'Child process enumeration returned nothing usable.'
+    }
+    return $ids.ToArray()
+}
+
+# Exit is not instantaneous once the parent returns, so a short grace period
+# separates "still shutting down" from "left running". Exceeding it is a leak.
+function Test-ProcessIdGone {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$ProcessId,
+        [ValidateRange(0, 30000)][int]$TimeoutMilliseconds = 5000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    foreach ($id in $ProcessId) {
+        while ($true) {
+            $alive = $null
+            try { $alive = Get-Process -Id $id -ErrorAction Stop } catch { $alive = $null }
+            if ($null -eq $alive) { break }
+            if ([DateTime]::UtcNow -gt $deadline) { return $false }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    return $true
+}
+
+# Runs one child under a time limit and reports whether everything it started
+# is gone afterwards.
+#
+# WaitForExit on the immediate child is not a time limit for the tree: killing
+# cmd leaves the PowerShell it started running, and a hook that blocks forever
+# would otherwise hold the suite open with no upper bound. The timeout path
+# therefore kills the tree with taskkill /T, and the descendants observed
+# during the run are checked afterwards so that a leak is reported rather than
+# assumed absent.
+function Invoke-SumiGuardTestProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
+        [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FileName
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $stdoutTask = $null
+    $stderrTask = $null
+    $timedOut = $false
+    $observed = @()
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('test child process did not start')
+        }
+        # Both reads start before any wait so a full pipe cannot block the child.
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        # One look for the grandchild while the run is still in progress. A run
+        # that finishes first simply has nothing to list, which is not a leak.
+        if (-not $process.WaitForExit(250)) {
+            $observed = @(Get-ChildProcessId -ParentId $process.Id)
+        }
+
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $timedOut = $true
+            if ($observed.Count -eq 0) {
+                $observed = @(Get-ChildProcessId -ParentId $process.Id)
+            }
+            # /T takes the tree, so the hook's PowerShell goes with cmd.
+            $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') '/T' '/F' '/PID' $process.Id 2>&1
+            $process.WaitForExit()
+        }
+        else {
+            $process.WaitForExit()
+        }
+
+        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
+        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        try { if (-not $process.HasExited) { $process.Kill() } } catch {
+            Write-Verbose 'Child cleanup did not need a Kill call.'
+        }
+        $process.Dispose()
+    }
+
+    return [pscustomobject][ordered]@{
+        exit_code = $exitCode
+        timed_out = $timedOut
+        stdout_text = $stdout
+        stderr_text = $stderr
+        observed_descendants = $observed.Count
+        descendants_reaped = (Test-ProcessIdGone -ProcessId $observed)
+    }
+}
+
+# Protected bodies in the local store are named <32 lowercase hex>.sgb. An
+# "is the body store empty" check that looked for any other extension would
+# report zero whether or not a body had been written, which is why the name
+# the store actually uses is matched here and why the matcher itself is given
+# a positive control below.
+function Get-BodyContainerCount {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) { return 0 }
+    return @(Get-ChildItem -LiteralPath $Path -Recurse -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -cmatch '^[0-9a-f]{32}\.sgb$' }).Count
 }
 
 # The reference hash: UTF-8 bytes of the original command string, which is what
@@ -200,40 +343,16 @@ function Invoke-HookWithStandardInput {
     $commandLine = '/s /c "' + '"' + $powerShell51 + '" ' + $childCommandLine +
         ' < "' + $inputPath + '"' + '"'
 
-    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
-    $startInfo.FileName = Join-Path $env:SystemRoot 'System32\cmd.exe'
-    $startInfo.Arguments = $commandLine
-    $startInfo.UseShellExecute = $false
-    $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardInput = $false
-    $startInfo.RedirectStandardOutput = $true
-    $startInfo.RedirectStandardError = $true
-
     $script:stage = $CaseName + '/child-run'
-    $process = New-Object System.Diagnostics.Process
-    $process.StartInfo = $startInfo
-    $stdoutTask = $null
-    $stderrTask = $null
-    try {
-        if (-not $process.Start()) {
-            throw [System.InvalidOperationException]::new('hook child process did not start')
-        }
-        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
-        $stderrTask = $process.StandardError.ReadToEndAsync()
-
-        $null = $process.WaitForExit(60000)
-        $process.WaitForExit()
-        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
-        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
-        $exitCode = $process.ExitCode
-    }
-    finally {
-        try { if (-not $process.HasExited) { $process.Kill() } } catch {
-            Write-Verbose 'Child cleanup did not need a Kill call.'
-        }
-        $process.Dispose()
-    }
+    $run = Invoke-SumiGuardTestProcess `
+        -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+        -Arguments $commandLine
     $script:childStartCount++
+    if ($run.timed_out) { $script:timedOutCount++ }
+    if (-not $run.descendants_reaped) { $script:unreapedCount++ }
+    $stdout = [string]$run.stdout_text
+    $stderr = [string]$run.stderr_text
+    $exitCode = $run.exit_code
 
     $script:stage = $CaseName + '/read-result'
     $detail = $null
@@ -262,10 +381,7 @@ function Invoke-HookWithStandardInput {
     }
 
     $script:stage = $CaseName + '/read-body-store'
-    $bodyFileCount = 0
-    if (Test-Path -LiteralPath $bodyStorePath) {
-        $bodyFileCount = @(Get-ChildItem -LiteralPath $bodyStorePath -Recurse -File -Filter '*.bin' -ErrorAction SilentlyContinue).Count
-    }
+    $bodyFileCount = Get-BodyContainerCount -Path $bodyStorePath
 
     $script:stage = $CaseName + '/read-notice'
     $noticeText = ''
@@ -279,6 +395,9 @@ function Invoke-HookWithStandardInput {
 
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
+        timed_out = $run.timed_out
+        descendants_reaped = $run.descendants_reaped
+        observed_descendants = $run.observed_descendants
         sent_byte_count = $InputBytes.Length
         sent_first_bytes = $sentPrefix
         stdout_text = $stdout
@@ -333,6 +452,33 @@ try {
     $null = New-Item -ItemType Directory -Path $workRoot -Force
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false, $true)
     [byte[]]$bomBytes = @(0xEF, 0xBB, 0xBF)
+
+    # Positive control for the body-store check. Every case below asserts that
+    # no body container was written; that assertion is only worth anything if
+    # the counter would notice one. Fixed names on disk, no store involved.
+    try {
+        $script:stage = 'assert/body-container-detector'
+        $detectorRoot = Join-Path $workRoot 'body-container-detector'
+        $null = New-Item -ItemType Directory -Path $detectorRoot -Force
+        $emptyCount = Get-BodyContainerCount -Path $detectorRoot
+        Set-Content -LiteralPath (Join-Path $detectorRoot '0123456789abcdef0123456789abcdef.sgb') -Value 'x' -Encoding Ascii
+        $oneCount = Get-BodyContainerCount -Path $detectorRoot
+        # Names that are not containers must not be counted.
+        Set-Content -LiteralPath (Join-Path $detectorRoot 'notes.txt') -Value 'x' -Encoding Ascii
+        Set-Content -LiteralPath (Join-Path $detectorRoot 'abcd.sgb') -Value 'x' -Encoding Ascii
+        $stillOneCount = Get-BodyContainerCount -Path $detectorRoot
+        $script:stage = 'add/BODY_CONTAINER_DETECTOR_WORKS'
+        Add-Result 'BODY_CONTAINER_DETECTOR_WORKS' (
+            $emptyCount -eq 0 -and $oneCount -eq 1 -and $stillOneCount -eq 1) -Observed @{
+                empty = $emptyCount; with_container = $oneCount; with_decoys = $stillOneCount }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_BODY_CONTAINER_DETECTOR' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
 
     # Cases 1-3 over both profiles: ASCII, non-ASCII, and a leading BOM. Each
     # must decode to the original command and record its hash.
@@ -508,9 +654,14 @@ try {
             "-ResultPath '$resultPath' " +
             "-TestIntentSaveOutcome 'TEST_SUCCESS'"
         $encoded = [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($inner))
-        $null = & $powerShell51 -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-            -EncodedCommand $encoded 2>&1
+        # Through the same helper as the other cases, so this path is under a
+        # time limit too and its descendants are checked.
+        $directProcess = Invoke-SumiGuardTestProcess `
+            -FileName $powerShell51 `
+            -Arguments ('-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded)
         $script:childStartCount++
+        if ($directProcess.timed_out) { $script:timedOutCount++ }
+        if (-not $directProcess.descendants_reaped) { $script:unreapedCount++ }
         $directDetail = $null
         if (Test-Path -LiteralPath $resultPath) {
             $directDetail = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -550,8 +701,12 @@ finally {
     }
 
     $failed = @($results | Where-Object { -not $_.pass })
+    # A leftover temporary root or a child that outlived its run is a failed
+    # run, not a footnote under a successful one: reporting success while
+    # either is true would hide exactly the states these fields exist to catch.
     $summary = [pscustomobject][ordered]@{
-        success = ($failed.Count -eq 0 -and $null -eq $failure)
+        success = ($failed.Count -eq 0 -and $null -eq $failure -and
+            $workRootRemoved -and $script:timedOutCount -eq 0 -and $script:unreapedCount -eq 0)
         powershell_version = $PSVersionTable.PSVersion.ToString()
         console_input_encoding = [Console]::InputEncoding.WebName
         failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
@@ -565,6 +720,8 @@ finally {
         failure = $failure
         results = $results.ToArray()
         hook_child_processes_started = $childStartCount
+        child_processes_timed_out = $script:timedOutCount
+        child_processes_left_running = $script:unreapedCount
         command_inputs_executed = $false
         body_store_written = $false
         network_access_performed = $false

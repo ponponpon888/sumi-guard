@@ -31,6 +31,10 @@ $results = New-Object System.Collections.Generic.List[object]
 $script:stage = 'start'
 $failure = $null
 $childStartCount = 0
+# A child that had to be killed on a timeout, or that left something running,
+# is a failure of the run even when every assertion passed.
+$script:timedOutCount = 0
+$script:unreapedCount = 0
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-claude-hook-' + [Guid]::NewGuid().ToString('N'))
 
 function Add-Result {
@@ -166,6 +170,120 @@ function Get-CodexEventJson {
     } | ConvertTo-Json -Compress -Depth 5)
 }
 
+# The processes started directly below the given one. Used to find the hook's
+# PowerShell when it is launched under cmd, because waiting on cmd alone says
+# nothing about whether its child is still running.
+function Get-ChildProcessId {
+    param([Parameter(Mandatory = $true)][int]$ParentId)
+
+    # Only the PowerShell this run started. cmd also brings up a console host,
+    # which the OS owns and which can outlive cmd by a moment; counting that
+    # as an unreaped child would report a leak on every passing run.
+    $ids = New-Object System.Collections.Generic.List[int]
+    try {
+        foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
+            -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
+            if ([string]$entry.Name -like 'powershell*') {
+                $ids.Add([int]$entry.ProcessId)
+            }
+        }
+    }
+    catch {
+        Write-Verbose 'Child process enumeration returned nothing usable.'
+    }
+    return $ids.ToArray()
+}
+
+# Exit is not instantaneous once the parent returns, so a short grace period
+# separates "still shutting down" from "left running". Exceeding it is a leak.
+function Test-ProcessIdGone {
+    param(
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$ProcessId,
+        [ValidateRange(0, 30000)][int]$TimeoutMilliseconds = 5000
+    )
+
+    $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    foreach ($id in $ProcessId) {
+        while ($true) {
+            $alive = $null
+            try { $alive = Get-Process -Id $id -ErrorAction Stop } catch { $alive = $null }
+            if ($null -eq $alive) { break }
+            if ([DateTime]::UtcNow -gt $deadline) { return $false }
+            Start-Sleep -Milliseconds 50
+        }
+    }
+    return $true
+}
+
+# Runs one child under a time limit and reports whether everything it started
+# is gone afterwards. Killing cmd would leave the PowerShell it started
+# running, so the timeout path takes the tree with taskkill /T.
+function Invoke-SumiGuardTestProcess {
+    param(
+        [Parameter(Mandatory = $true)][string]$FileName,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
+        [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FileName
+    $startInfo.Arguments = $Arguments
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardInput = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $process = New-Object System.Diagnostics.Process
+    $process.StartInfo = $startInfo
+    $stdoutTask = $null
+    $stderrTask = $null
+    $timedOut = $false
+    $observed = @()
+    try {
+        if (-not $process.Start()) {
+            throw [System.InvalidOperationException]::new('test child process did not start')
+        }
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+
+        if (-not $process.WaitForExit(250)) {
+            $observed = @(Get-ChildProcessId -ParentId $process.Id)
+        }
+
+        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
+            $timedOut = $true
+            if ($observed.Count -eq 0) {
+                $observed = @(Get-ChildProcessId -ParentId $process.Id)
+            }
+            $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') '/T' '/F' '/PID' $process.Id 2>&1
+            $process.WaitForExit()
+        }
+        else {
+            $process.WaitForExit()
+        }
+
+        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
+        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
+        $exitCode = $process.ExitCode
+    }
+    finally {
+        try { if (-not $process.HasExited) { $process.Kill() } } catch {
+            Write-Verbose 'Child cleanup did not need a Kill call.'
+        }
+        $process.Dispose()
+    }
+
+    return [pscustomobject][ordered]@{
+        exit_code = $exitCode
+        timed_out = $timedOut
+        stdout_text = $stdout
+        stderr_text = $stderr
+        observed_descendants = $observed.Count
+        descendants_reaped = (Test-ProcessIdGone -ProcessId $observed)
+    }
+}
+
 function Invoke-Hook {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$EventJson,
@@ -205,17 +323,30 @@ function Invoke-Hook {
     if ($PSBoundParameters.ContainsKey('Origin')) { $arguments += @('-EvaluationOrigin', $Origin) }
     if ($TrustedRoute) { $arguments += '-TrustedWindowsPowerShellRoute' }
 
-    $previousPreference = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        $script:stage = $CaseName + '/child-run'
-        $stdout = $EventJson | & $powerShell51 @arguments 2>&1
-        $exitCode = $LASTEXITCODE
-    }
-    finally {
-        $ErrorActionPreference = $previousPreference
-    }
+    # The event is written to a file and redirected in by the shell rather than
+    # piped with the call operator. A pipeline gives no process handle, so the
+    # run would have no time limit and a hook that blocked would hold the suite
+    # open indefinitely.
+    $inputPath = Join-Path $caseRoot 'stdin.bin'
+    [System.IO.File]::WriteAllBytes($inputPath, (New-Object System.Text.UTF8Encoding($false, $true)).GetBytes($EventJson))
+
+    $childCommandLine = (($arguments | ForEach-Object {
+        $value = [string]$_
+        if ($value -match '[\s"]') { '"' + $value + '"' } else { $value }
+    }) -join ' ')
+    # /s /c makes cmd strip exactly the outer quotes and take the rest as is.
+    $commandLine = '/s /c "' + '"' + $powerShell51 + '" ' + $childCommandLine +
+        ' < "' + $inputPath + '"' + '"'
+
+    $script:stage = $CaseName + '/child-run'
+    $run = Invoke-SumiGuardTestProcess `
+        -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+        -Arguments $commandLine
     $script:childStartCount++
+    if ($run.timed_out) { $script:timedOutCount++ }
+    if (-not $run.descendants_reaped) { $script:unreapedCount++ }
+    $stdout = [string]$run.stdout_text
+    $exitCode = $run.exit_code
 
     $script:stage = $CaseName + '/read-result'
     $detail = $null
@@ -238,7 +369,9 @@ function Invoke-Hook {
 
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
-        stdout_text = ($stdout | Out-String)
+        timed_out = $run.timed_out
+        descendants_reaped = $run.descendants_reaped
+        stdout_text = $stdout
         detail = $detail
         store_text = $storeText
         notice_text = $noticeText
@@ -422,6 +555,38 @@ try {
         Add-Result 'EXECUTION_ID_FOLLOWS_TOOL_USE_ID' (
             $otherId -match '^[0-9a-f]{32}$' -and $firstId -cne $otherId) -Observed @{
                 first_id = $firstId; other_tool_use_id = $otherId }
+
+        # Two distinct tool calls whose fields differ only in where the
+        # boundary falls. Joining the fields with a separator would hash the
+        # same string for both and give them one execution id, so the pairs
+        # below are the regression: each separator the composition could use
+        # is placed inside a field.
+        foreach ($pair in @(
+            @{ name = 'EXECUTION_ID_RESISTS_NEWLINE_BOUNDARY_SHIFT'
+               left = @{ session = "a`nb"; toolUse = 'c' }
+               right = @{ session = 'a'; toolUse = "b`nc" } },
+            @{ name = 'EXECUTION_ID_RESISTS_PIPE_BOUNDARY_SHIFT'
+               left = @{ session = 'a|b'; toolUse = 'c' }
+               right = @{ session = 'a'; toolUse = 'b|c' } },
+            @{ name = 'EXECUTION_ID_RESISTS_LENGTH_PREFIX_FORGERY'
+               left = @{ session = '1:x'; toolUse = 'y' }
+               right = @{ session = '1'; toolUse = ':xy' } })) {
+
+            $script:stage = 'assert/' + $pair.name
+            $leftRun = Invoke-Hook -CaseName ($pair.name + '-L') `
+                -EventJson (Get-ClaudeEventJson -Command 'Get-Date' `
+                    -SessionId $pair.left.session -ToolUseId $pair.left.toolUse)
+            $rightRun = Invoke-Hook -CaseName ($pair.name + '-R') `
+                -EventJson (Get-ClaudeEventJson -Command 'Get-Date' `
+                    -SessionId $pair.right.session -ToolUseId $pair.right.toolUse)
+            $leftId = [string](Get-DetailField -Run $leftRun -Name 'execution_id')
+            $rightId = [string](Get-DetailField -Run $rightRun -Name 'execution_id')
+            $script:stage = 'add/' + $pair.name
+            Add-Result $pair.name (
+                $leftId -match '^[0-9a-f]{32}$' -and
+                $rightId -match '^[0-9a-f]{32}$' -and
+                $leftId -cne $rightId) -Observed @{ left_id = $leftId; right_id = $rightId }
+        }
     }
     catch {
         Add-Result 'CASE_EXCEPTION_EXECUTION_ID' $false -Observed @{
@@ -597,7 +762,10 @@ finally {
 
     $failed = @($results | Where-Object { -not $_.pass })
     $summary = [pscustomobject][ordered]@{
-        success = ($failed.Count -eq 0 -and $null -eq $failure)
+        # A leftover temporary root or a child that outlived its run is a
+        # failed run, not a footnote under a successful one.
+        success = ($failed.Count -eq 0 -and $null -eq $failure -and
+            $workRootRemoved -and $script:timedOutCount -eq 0 -and $script:unreapedCount -eq 0)
         powershell_version = $PSVersionTable.PSVersion.ToString()
         failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
         failure_line = $(if ($null -eq $failure) { $null } else { [int]$failure.script_line_number })
@@ -610,6 +778,8 @@ finally {
         failure = $failure
         results = $results.ToArray()
         hook_child_processes_started = $childStartCount
+        child_processes_timed_out = $script:timedOutCount
+        child_processes_left_running = $script:unreapedCount
         command_inputs_executed = $false
         body_store_written = $false
         network_access_performed = $false

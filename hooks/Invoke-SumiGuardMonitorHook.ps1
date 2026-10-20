@@ -143,11 +143,23 @@ function Get-SumiGuardPreToolExecutionId {
     # is split by host rather than shared. The Codex composition is unchanged,
     # so ids already in a store keep resolving.
     if ($ProfileName -ceq 'CLAUDE_PRETOOLUSE') {
-        $material = "CLAUDE_PRETOOLUSE_HOOK`n" +
-            ([string]$HookInput.session_id) + "`n" +
-            ([string]$HookInput.tool_use_id)
+        # Each field is written as its length, a colon, then its text. Joining
+        # the fields with a separator would let that separator occur inside a
+        # field and move the boundary: session_id "a<LF>b" with tool_use_id "c"
+        # would hash the same string as session_id "a" with tool_use_id
+        # "b<LF>c", so two distinct tool calls would share one execution id. A
+        # length cannot be forged from the content, so exactly one pair of
+        # fields maps to any given string.
+        $claudeSession = [string]$HookInput.session_id
+        $claudeToolUse = [string]$HookInput.tool_use_id
+        $material = 'CLAUDE_PRETOOLUSE_HOOK' +
+            '|' + $claudeSession.Length + ':' + $claudeSession +
+            '|' + $claudeToolUse.Length + ':' + $claudeToolUse
     }
     else {
+        # Unchanged. This composition has the same separator ambiguity, but it
+        # is the published contract for ids already in a store, so it is not
+        # altered here.
         $material = ([string]$HookInput.session_id) + '|' +
             ([string]$HookInput.turn_id) + '|' +
             ([string]$HookInput.tool_use_id)

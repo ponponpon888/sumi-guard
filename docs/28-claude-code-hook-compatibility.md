@@ -72,7 +72,7 @@ PowerShell AST として評価することになります。これは `docs/24` 
 |---|---|---|
 | 必須の識別子 | `session_id`、`turn_id`、`tool_use_id` | `session_id`、`tool_use_id` |
 | 収集するツール名 | `Bash` | `Bash`、`PowerShell` |
-| `execution_id` の材料 | `session_id\|turn_id\|tool_use_id` | `CLAUDE_PRETOOLUSE_HOOK` + LF + `session_id` + LF + `tool_use_id` |
+| `execution_id` の材料 | `session_id\|turn_id\|tool_use_id`（変更なし） | `CLAUDE_PRETOOLUSE_HOOK` + 各項目を「長さ:値」で連結 |
 | `evaluation_origin` | `CODEX_PRETOOLUSE_HOOK`、`MANAGED_EXECUTION` | `CLAUDE_PRETOOLUSE_HOOK` のみ |
 
 既定は `CODEX_PRETOOLUSE` です。既存の必須フィールド、`execution_id` の算出、評価origin、
@@ -84,6 +84,12 @@ PowerShell AST として評価することになります。これは `docs/24` 
 プロファイル名を接頭辞に含む別の文字列から算出するため、識別空間がホストごとに分かれます。
 同じ `session_id` と `tool_use_id` を持つ2ホストのイベントは、異なる `execution_id` になります。
 Codex 側の算出式は変更していないため、既存ストアの ID は従来どおり解決します。
+
+各項目は区切り文字で連結せず、**「長さ:値」の形**で連結します。区切り文字で繋ぐと、その文字が
+項目の中に現れたときに境界がずれます。`session_id="a<LF>b"` と `tool_use_id="c"` が、
+`session_id="a"` と `tool_use_id="b<LF>c"` と同じ文字列になり、別々のツール呼び出しが1つの
+`execution_id` を共有してしまいます。長さは内容から偽造できないため、項目の組と文字列は1対1に
+対応します。改行・`|`・`長さ:` 形式の偽造を試みる3件を回帰試験で確認しています。
 
 ### origin はプロファイルと一致させる
 
@@ -206,7 +212,17 @@ BOM なし ASCII、BOM なし日本語、BOM なし絵文字（BMP 外）、先�
 UTF-16、空入力、不正 JSON、直接入力を、Codex・Claude 両プロファイルで確認します。
 正常系は、記録件数が1件であることと、元のコマンド文字列から計算した UTF-8 SHA-256 が
 保存された `body_sha256` と一致することを確認します。アダプタは実物を使い、`MetadataOnly`
-経路のみを通るため本文は保存されず（`body_file_count=0`）、DPAPI にも到達しません。
+経路のみを通るため本文は保存されず、DPAPI にも到達しません。
+
+本文非保存の確認は、LocalStore が実際に使う容器名 `<32桁の小文字16進>.sgb` を数えます。
+別の拡張子を探す検査は本文の有無にかかわらず0を返すため、検査自体が機能することを
+`BODY_CONTAINER_DETECTOR_WORKS` で別に確認します（容器名のファイルを1件置いて1と数え、
+`notes.txt` と `abcd.sgb` を置いても1のまま）。
+
+子プロセスはすべて時間上限の下で起動します。`cmd` を待つだけではその下の PowerShell が
+残り得るため、上限超過時は `taskkill /T` で木ごと停止し、実行中に観測した PowerShell が
+終了したことを猶予付きで確認します。一時領域の削除失敗、時間上限超過、子プロセスの残存は
+いずれも `success=false` と終了コード1に反映します（判定がすべて通っていても失敗扱いです）。
 
 新規の合成試験 `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`（23判定）を追加し、
 DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず、`-TestIntentSaveOutcome TEST_SUCCESS`
