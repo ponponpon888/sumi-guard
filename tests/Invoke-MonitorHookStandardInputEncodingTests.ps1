@@ -121,94 +121,102 @@ function Get-ObservedDiagnostic {
 #
 # A tree kill only reaches what is still under the launcher. When cmd exits
 # first and leaves its PowerShell behind, that child has no tree to be killed
-# with, so it is terminated individually instead. Doing that safely needs more
-# than a pid: pids are reused, and a reused one belongs to a process this test
-# never started. Every observed child therefore carries its start time, and
-# nothing is terminated unless both still match.
+# with, so it is terminated individually instead. Identifying it by pid alone
+# would be wrong, because pids are reused. It is identified by a handle opened
+# the moment it is observed: while that handle is held the kernel keeps the
+# pid reserved, so it cannot come to mean a different process, and the handle
+# is the thing terminated later. Start times are compared exactly, never
+# within a tolerance, and a child whose identity cannot be confirmed is left
+# running and reported as a failure rather than killed on a guess.
 
-# The PowerShell processes directly below the given one, each with the start
-# time that identifies it. cmd also brings up a console host that the OS owns
-# and that can briefly outlive cmd, so only what this test started is tracked
-# and that host is not mistaken for a leak. A failed query returns ok=$false
-# instead of an empty list: "could not look" is not "looked and found
-# nothing".
+# The PowerShell processes directly below the given one, each pinned by a
+# handle opened now. cmd also brings up a console host that the OS owns and
+# that can briefly outlive cmd, so only what this test started is tracked.
+#
+# A failed query returns ok=$false instead of an empty list: "could not look"
+# is not "looked and found nothing". A child that cannot be pinned, or whose
+# creation timestamp changes between the two reads that bracket opening the
+# handle, is reported the same way: it is not recorded as ours, and the
+# snapshot is marked unreliable.
 function Get-ChildProcessSnapshot {
     param([Parameter(Mandatory = $true)][int]$ParentId)
 
     $found = New-Object System.Collections.Generic.List[object]
+    $ok = $true
     try {
         foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
             -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
-            if ([string]$entry.Name -like 'powershell*' -and $null -ne $entry.CreationDate) {
+
+            if ([string]$entry.Name -notlike 'powershell*' -or $null -eq $entry.CreationDate) { continue }
+            $childId = [int]$entry.ProcessId
+            $createdAtFirstRead = [DateTime]$entry.CreationDate
+
+            $handle = $null
+            try {
+                $handle = [System.Diagnostics.Process]::GetProcessById($childId)
+            }
+            catch {
+                # Exited between the listing and here. Nothing to pin and
+                # nothing left to reap.
+                continue
+            }
+
+            # The handle now holds the pid, so read the creation timestamp
+            # once more from the same source. Equal means the handle pins the
+            # process that was listed; anything else means the pid moved
+            # before it could be pinned, which is not something to act on.
+            $confirmed = $false
+            try {
+                $recheck = @(Get-CimInstance -ClassName Win32_Process `
+                    -Filter "ProcessId=$childId" -ErrorAction Stop)
+                if ($recheck.Count -eq 1 -and
+                    [string]$recheck[0].Name -like 'powershell*' -and
+                    $null -ne $recheck[0].CreationDate -and
+                    ([DateTime]$recheck[0].CreationDate) -eq $createdAtFirstRead) {
+                    $confirmed = $true
+                }
+            }
+            catch {
+                $confirmed = $false
+            }
+
+            if (-not $confirmed) {
+                $handle.Dispose()
+                $ok = $false
+                continue
+            }
+
+            # From here on the handle is the identity. StartTime is read from
+            # it once and kept so the reap can confirm, by exact comparison,
+            # that it is still looking at the same process object.
+            try {
                 $found.Add([pscustomobject]@{
-                    id = [int]$entry.ProcessId
-                    started = [DateTime]$entry.CreationDate
+                    handle = $handle
+                    id = $childId
+                    started = $handle.StartTime
                 })
             }
+            catch {
+                $handle.Dispose()
+                $ok = $false
+            }
         }
-        return [pscustomobject]@{ ok = $true; items = $found.ToArray() }
+        return [pscustomobject]@{ ok = $ok; items = $found.ToArray() }
     }
     catch {
+        foreach ($item in $found) { $item.handle.Dispose() }
         return [pscustomobject]@{ ok = $false; items = @() }
     }
 }
 
-# What an observed child is now: gone, still the one we started, a different
-# process that happens to hold the same pid, or undetermined. The start time
-# is what separates the second from the third, and the name is checked too so
-# that a recycled pid cannot be mistaken for ours on a clock comparison alone.
-function Get-ObservedProcessState {
-    param([Parameter(Mandatory = $true)]$Entry)
-
-    try {
-        $live = @(Get-CimInstance -ClassName Win32_Process `
-            -Filter "ProcessId=$($Entry.id)" -ErrorAction Stop)
-        if ($live.Count -eq 0) { return 'gone' }
-        $holder = $live[0]
-        if ($null -eq $holder.CreationDate) { return 'unknown' }
-        if ([string]$holder.Name -notlike 'powershell*') { return 'reused' }
-        # Two sources for the same instant, so a small tolerance rather than
-        # an exact comparison. Far too tight for a different process to slip
-        # through: a reused pid is a later start by orders of magnitude more.
-        if ([Math]::Abs((([DateTime]$holder.CreationDate) - $Entry.started).TotalMilliseconds) -gt 2000) {
-            return 'reused'
-        }
-        return 'match'
-    }
-    catch {
-        return 'unknown'
-    }
-}
-
-# Terminates one observed child, re-checking its identity through the handle
-# immediately before the kill so that a pid recycled between the check and
-# here is still not touched.
-function Invoke-ObservedProcessTermination {
-    param([Parameter(Mandatory = $true)]$Entry)
-
-    try {
-        $handle = [System.Diagnostics.Process]::GetProcessById([int]$Entry.id)
-        try {
-            if ($handle.HasExited) { return $false }
-            if ([Math]::Abs(($handle.StartTime - $Entry.started).TotalMilliseconds) -gt 2000) {
-                return $false
-            }
-            $handle.Kill()
-            return $true
-        }
-        finally {
-            $handle.Dispose()
-        }
-    }
-    catch {
-        return $false
-    }
-}
-
 # Brings the observed children to an end and reports what happened, under one
-# deadline that covers both the termination and the confirmation. Running out
-# of time with one of ours still alive is a leak; running out while the state
-# is undetermined is an unverified run. Neither is reported as success.
+# deadline that covers both the termination and the confirmation.
+#
+# Identity comes from the held handle, and the start time read through it must
+# match exactly what was recorded. No tolerance: a near miss is a mismatch. A
+# child whose identity does not confirm is not terminated, and the run is
+# reported as unverified rather than clean, because something is running that
+# this helper cannot account for.
 function Invoke-ObservedProcessReap {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][object[]]$Observed,
@@ -219,31 +227,47 @@ function Invoke-ObservedProcessReap {
     $gone = $true
     $verified = $true
     $terminated = 0
-    $skipped = 0
-    foreach ($entry in $Observed) {
-        $killed = $false
+    $unconfirmed = 0
+    foreach ($item in $Observed) {
+        $handle = $item.handle
+        $alreadyKilled = $false
         while ($true) {
-            $state = Get-ObservedProcessState -Entry $entry
-            if ($state -ceq 'gone') {
-                if ($killed) { $terminated++ }
-                break
-            }
-            if ($state -ceq 'reused') {
-                # Someone else's process now holds this pid. Ours is gone and
-                # this one is left alone.
-                $skipped++
-                break
-            }
-            if ($state -ceq 'unknown') {
+            $exited = $null
+            try { $exited = [bool]$handle.HasExited } catch { $exited = $null }
+
+            if ($null -eq $exited) {
                 if ([DateTime]::UtcNow -gt $deadline) { $verified = $false; break }
                 Start-Sleep -Milliseconds 50
                 continue
             }
+            if ($exited) {
+                if ($alreadyKilled) { $terminated++ }
+                break
+            }
 
-            # Still the process this run started.
-            if (-not $killed) {
-                $null = Invoke-ObservedProcessTermination -Entry $entry
-                $killed = $true
+            # Still running. Confirm it is the same process object before
+            # doing anything to it.
+            $sameProcess = $false
+            $identityKnown = $true
+            try { $sameProcess = ($handle.StartTime -eq $item.started) } catch { $identityKnown = $false }
+
+            if (-not $identityKnown) {
+                if ([DateTime]::UtcNow -gt $deadline) { $verified = $false; break }
+                Start-Sleep -Milliseconds 50
+                continue
+            }
+            if (-not $sameProcess) {
+                # Not what was observed. Left alone, and reported, never killed.
+                $unconfirmed++
+                $verified = $false
+                break
+            }
+
+            if (-not $alreadyKilled) {
+                try { $handle.Kill() } catch {
+                    Write-Verbose 'Observed child had already ended before the kill.'
+                }
+                $alreadyKilled = $true
             }
             if ([DateTime]::UtcNow -gt $deadline) { $gone = $false; break }
             Start-Sleep -Milliseconds 50
@@ -254,7 +278,7 @@ function Invoke-ObservedProcessReap {
         gone = $gone
         verified = $verified
         terminated = $terminated
-        skipped_foreign = $skipped
+        identity_unconfirmed = $unconfirmed
     }
 }
 
@@ -308,12 +332,20 @@ function Invoke-ProcessTreeTermination {
 # holds, which would hand back the hang the timeout just removed. Every wait
 # here is therefore bounded, and a wait that runs out is reported rather than
 # folded into a clean result.
+#
+# The reap runs in finally, so a failure anywhere after the children were
+# observed still ends them. The original exception is left to propagate: the
+# finally records what the reap did in script scope instead of returning it,
+# and never throws on its own.
 function Invoke-SumiGuardTestProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FileName,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
         [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000,
-        [ValidateRange(1000, 60000)][int]$ShutdownTimeoutMilliseconds = 15000
+        [ValidateRange(1000, 60000)][int]$ShutdownTimeoutMilliseconds = 15000,
+        # Test seam for the finally path: fails the run at the one moment
+        # where children exist but nothing has cleaned them up yet.
+        [switch]$TestThrowAfterObservation
     )
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -338,6 +370,9 @@ function Invoke-SumiGuardTestProcess {
     $stdout = ''
     $stderr = ''
     $exitCode = $null
+    $script:LastObservedChildIds = @()
+    $script:LastReapResult = $null
+    $script:LastReapFailed = $false
     try {
         if (-not $process.Start()) {
             throw [System.InvalidOperationException]::new('test child process did not start')
@@ -348,15 +383,20 @@ function Invoke-SumiGuardTestProcess {
 
         # Children can only be enumerated while their parent is alive, so the
         # looks happen early and more than once. A launcher that exits first
-        # still gets its children recorded here, which is what makes reaping
+        # still gets its children pinned here, which is what makes reaping
         # them afterwards possible at all.
         foreach ($waitMs in @(250, 750)) {
             if ($process.WaitForExit($waitMs)) { break }
             $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
             if (-not $snapshot.ok) { $enumerationOk = $false }
             foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) }
+                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
             }
+        }
+        $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
+
+        if ($TestThrowAfterObservation) {
+            throw [System.InvalidOperationException]::new('synthetic failure after observation')
         }
 
         if ($process.WaitForExit($TimeoutMilliseconds)) {
@@ -367,8 +407,9 @@ function Invoke-SumiGuardTestProcess {
             $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
             if (-not $snapshot.ok) { $enumerationOk = $false }
             foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) }
+                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
             }
+            $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
             $killCompleted = Invoke-ProcessTreeTermination -ProcessId $process.Id `
                 -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
             $exitObserved = $process.WaitForExit($ShutdownTimeoutMilliseconds)
@@ -380,6 +421,7 @@ function Invoke-SumiGuardTestProcess {
         # very wait this helper exists to bound.
         $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
             -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
+        $script:LastReapResult = $reap
 
         $outputComplete = $true
         if ($stdoutTask.Wait($ShutdownTimeoutMilliseconds)) { $stdout = [string]$stdoutTask.Result }
@@ -392,21 +434,38 @@ function Invoke-SumiGuardTestProcess {
         }
     }
     finally {
-        # Last resort, still scoped to this run's own tree.
+        # The reap is guaranteed here, including on the paths that threw. It
+        # runs before the tree kill so that the children this run pinned are
+        # ended by their own identity rather than incidentally. Nothing in
+        # this block is allowed to throw, because that would replace whatever
+        # exception is already on its way out.
+        if ($null -eq $reap) {
+            try {
+                $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
+                    -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
+                $script:LastReapResult = $reap
+                if (-not ($reap.gone -and $reap.verified)) { $script:LastReapFailed = $true }
+            }
+            catch {
+                $script:LastReapFailed = $true
+            }
+        }
+
         try {
             if (-not $process.HasExited) { $null = Invoke-ProcessTreeTermination -ProcessId $process.Id }
         }
         catch {
             Write-Verbose 'Final tree cleanup could not run.'
         }
+
+        foreach ($item in $observed) {
+            try { $item.handle.Dispose() } catch {
+                Write-Verbose 'Observed child handle was already disposed.'
+            }
+        }
         $process.Dispose()
     }
 
-    # Only when the run above threw before reaching the reap.
-    if ($null -eq $reap) {
-        $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
-            -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
-    }
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
         timed_out = $timedOut
@@ -416,7 +475,7 @@ function Invoke-SumiGuardTestProcess {
         observed_descendants = $observed.Count
         descendants_enumerated = $enumerationOk
         descendants_terminated = $reap.terminated
-        descendants_skipped_foreign = $reap.skipped_foreign
+        descendants_identity_unconfirmed = $reap.identity_unconfirmed
         descendants_reaped = $reap.gone
         descendants_verified = ($reap.verified -and $enumerationOk)
         stdout_text = $stdout
@@ -706,15 +765,26 @@ try {
         }
     }
 
-    # Control: a pid that now belongs to a different process must be left
-    # alone. This test's own process stands in for one, recorded with a start
-    # time that does not match, which is exactly what a recycled pid looks
-    # like. If identity were checked by pid alone, this case would terminate
-    # the test itself.
+    # Control: identity is exact. A start time that is merely close is a
+    # different process, and a near miss is the case a tolerance would wave
+    # through, so it is the one worth testing. This test's own process stands
+    # in for the candidate, recorded half a second off its real start time.
+    # If the comparison allowed any slack, this case would terminate the test
+    # itself.
     try {
-        $script:stage = 'assert/recycled-pid-control'
-        $foreign = [pscustomobject]@{ id = $PID; started = (Get-Date).AddDays(-1) }
-        $foreignReap = Invoke-ObservedProcessReap -Observed @($foreign) -TimeoutMilliseconds 3000
+        $script:stage = 'assert/near-miss-identity-control'
+        $selfHandle = [System.Diagnostics.Process]::GetProcessById($PID)
+        try {
+            $nearMiss = [pscustomobject]@{
+                handle = $selfHandle
+                id = $PID
+                started = $selfHandle.StartTime.AddMilliseconds(500)
+            }
+            $nearMissReap = Invoke-ObservedProcessReap -Observed @($nearMiss) -TimeoutMilliseconds 3000
+        }
+        finally {
+            $selfHandle.Dispose()
+        }
         $selfAlive = $false
         try {
             $null = [System.Diagnostics.Process]::GetProcessById($PID)
@@ -723,24 +793,109 @@ try {
         catch {
             $selfAlive = $false
         }
-        $script:stage = 'add/RECYCLED_PID_IS_NOT_TERMINATED'
-        Add-Result 'RECYCLED_PID_IS_NOT_TERMINATED' (
+        $script:stage = 'add/NEAR_MISS_START_TIME_IS_NOT_TERMINATED'
+        Add-Result 'NEAR_MISS_START_TIME_IS_NOT_TERMINATED' (
             $selfAlive -and
-            [int]$foreignReap.skipped_foreign -eq 1 -and
-            [int]$foreignReap.terminated -eq 0 -and
-            # Ours is accounted for: the process we recorded is gone, and the
-            # one holding its pid now is somebody else's.
-            [bool]$foreignReap.gone -and
-            [bool]$foreignReap.verified) -Observed @{
+            [int]$nearMissReap.identity_unconfirmed -eq 1 -and
+            [int]$nearMissReap.terminated -eq 0 -and
+            # Unconfirmed is a failure, not a quiet skip: something is running
+            # that the helper cannot account for.
+            (-not [bool]$nearMissReap.verified)) -Observed @{
                 self_alive = $selfAlive
-                skipped_foreign = [int]$foreignReap.skipped_foreign
-                terminated = [int]$foreignReap.terminated
-                gone = [bool]$foreignReap.gone
-                verified = [bool]$foreignReap.verified
+                identity_unconfirmed = [int]$nearMissReap.identity_unconfirmed
+                terminated = [int]$nearMissReap.terminated
+                verified = [bool]$nearMissReap.verified
             }
     }
     catch {
-        Add-Result 'CASE_EXCEPTION_RECYCLED_PID_CONTROL' $false -Observed @{
+        Add-Result 'CASE_EXCEPTION_NEAR_MISS_IDENTITY_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # Control: the run fails after the children are observed but before
+    # anything has cleaned them up. The reap has to happen anyway, the
+    # original exception has to survive it, and the reap's own outcome has to
+    # be recorded. The reap runs ahead of the tree kill in that path, so a
+    # terminated count here is the identity-based reap doing the work and not
+    # taskkill doing it incidentally.
+    try {
+        $script:stage = 'assert/throw-after-observation-control'
+        $throwRoot = Join-Path $workRoot 'throw-control'
+        $null = New-Item -ItemType Directory -Path $throwRoot -Force
+        $throwScript = Join-Path $throwRoot 'sleeper.cmd'
+        Set-Content -LiteralPath $throwScript -Encoding Ascii -Value @(
+            '@echo off',
+            ('"' + $powerShell51 + '" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 120"'),
+            'exit /b 0')
+
+        $script:LastObservedChildIds = @()
+        $script:LastReapResult = $null
+        $script:LastReapFailed = $false
+        $caughtType = ''
+        $caughtMessage = ''
+        try {
+            $null = Invoke-SumiGuardTestProcess `
+                -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+                -Arguments ('/s /c "' + $throwScript + '"') `
+                -TimeoutMilliseconds 30000 `
+                -TestThrowAfterObservation
+        }
+        catch {
+            $caughtType = [string]$_.Exception.GetType().FullName
+            $caughtMessage = [string]$_.Exception.Message
+        }
+        $script:childStartCount++
+
+        $recordedIds = @($script:LastObservedChildIds)
+        $reapResult = $script:LastReapResult
+        # Every pid the run pinned must be gone, checked by name as well so a
+        # pid handed to something else afterwards is not read as a survivor.
+        $allGone = $true
+        foreach ($id in $recordedIds) {
+            $deadline = [DateTime]::UtcNow.AddSeconds(10)
+            while ($true) {
+                $still = @()
+                try {
+                    $still = @(Get-CimInstance -ClassName Win32_Process `
+                        -Filter "ProcessId=$id" -ErrorAction Stop |
+                        Where-Object { [string]$_.Name -like 'powershell*' })
+                }
+                catch {
+                    $still = @()
+                }
+                if ($still.Count -eq 0) { break }
+                if ([DateTime]::UtcNow -gt $deadline) { $allGone = $false; break }
+                Start-Sleep -Milliseconds 50
+            }
+        }
+
+        $script:stage = 'add/OBSERVED_CHILD_IS_REAPED_WHEN_THE_RUN_THROWS'
+        Add-Result 'OBSERVED_CHILD_IS_REAPED_WHEN_THE_RUN_THROWS' (
+            # The original failure reached the caller unchanged.
+            $caughtType -ceq 'System.InvalidOperationException' -and
+            $caughtMessage -ceq 'synthetic failure after observation' -and
+            $recordedIds.Count -ge 1 -and
+            $null -ne $reapResult -and
+            [int]$reapResult.terminated -ge 1 -and
+            [bool]$reapResult.gone -and
+            [bool]$reapResult.verified -and
+            (-not [bool]$script:LastReapFailed) -and
+            $allGone) -Observed @{
+                caught_type = $caughtType
+                caught_message = $caughtMessage
+                recorded_children = $recordedIds.Count
+                terminated = $(if ($null -eq $reapResult) { -1 } else { [int]$reapResult.terminated })
+                reap_gone = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.gone })
+                reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
+                reap_failed = [bool]$script:LastReapFailed
+                all_recorded_children_gone = $allGone
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_THROW_AFTER_OBSERVATION_CONTROL' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
