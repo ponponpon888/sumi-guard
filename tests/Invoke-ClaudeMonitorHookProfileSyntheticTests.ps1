@@ -1,4 +1,4 @@
-<#
+﻿<#
     Synthetic tests for the CLAUDE_PRETOOLUSE profile of
     hooks/Invoke-SumiGuardMonitorHook.ps1.
 
@@ -35,6 +35,9 @@ $childStartCount = 0
 # is a failure of the run even when every assertion passed.
 $script:timedOutCount = 0
 $script:unreapedCount = 0
+# A run whose waits could not be completed, or whose children could not be
+# checked, has not shown that it left nothing behind. That is a failure too.
+$script:unverifiedCount = 0
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-claude-hook-' + [Guid]::NewGuid().ToString('N'))
 
 function Add-Result {
@@ -170,15 +173,20 @@ function Get-CodexEventJson {
     } | ConvertTo-Json -Compress -Depth 5)
 }
 
-# The processes started directly below the given one. Used to find the hook's
-# PowerShell when it is launched under cmd, because waiting on cmd alone says
-# nothing about whether its child is still running.
-function Get-ChildProcessId {
+# Everything below answers one question: when a run is over, is anything this
+# test started still alive, and do we actually know? Each step that could hang
+# gets its own limit, and each step that could fail gets its own reported
+# state, because a step that could not answer must never read as "nothing
+# left running".
+
+# The PowerShell processes directly below the given one. cmd also brings up a
+# console host that the OS owns and that can briefly outlive cmd, so only what
+# this test started is tracked and that host is not mistaken for a leak. A
+# failed query returns ok=$false instead of an empty list: "could not look" is
+# not "looked and found nothing".
+function Get-ChildProcessSnapshot {
     param([Parameter(Mandatory = $true)][int]$ParentId)
 
-    # Only the PowerShell this run started. cmd also brings up a console host,
-    # which the OS owns and which can outlive cmd by a moment; counting that
-    # as an unreaped child would report a leak on every passing run.
     $ids = New-Object System.Collections.Generic.List[int]
     try {
         foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
@@ -187,15 +195,16 @@ function Get-ChildProcessId {
                 $ids.Add([int]$entry.ProcessId)
             }
         }
+        return [pscustomobject]@{ ok = $true; ids = $ids.ToArray() }
     }
     catch {
-        Write-Verbose 'Child process enumeration returned nothing usable.'
+        return [pscustomobject]@{ ok = $false; ids = @() }
     }
-    return $ids.ToArray()
 }
 
-# Exit is not instantaneous once the parent returns, so a short grace period
-# separates "still shutting down" from "left running". Exceeding it is a leak.
+# Waits for each id to disappear within a grace period and keeps the three
+# outcomes apart: gone, still running, and could not be determined. An
+# undetermined check is reported as unverified and never rounded to gone.
 function Test-ProcessIdGone {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyCollection()][int[]]$ProcessId,
@@ -203,26 +212,97 @@ function Test-ProcessIdGone {
     )
 
     $deadline = [DateTime]::UtcNow.AddMilliseconds($TimeoutMilliseconds)
+    $gone = $true
+    $verified = $true
     foreach ($id in $ProcessId) {
         while ($true) {
-            $alive = $null
-            try { $alive = Get-Process -Id $id -ErrorAction Stop } catch { $alive = $null }
-            if ($null -eq $alive) { break }
-            if ([DateTime]::UtcNow -gt $deadline) { return $false }
+            $state = 'unknown'
+            try {
+                $handle = [System.Diagnostics.Process]::GetProcessById($id)
+                try {
+                    $state = if ($handle.HasExited) { 'gone' } else { 'alive' }
+                }
+                finally {
+                    $handle.Dispose()
+                }
+            }
+            catch [System.ArgumentException] {
+                # GetProcessById throws this exact type when no process with
+                # that id is running, which is the answer we want.
+                $state = 'gone'
+            }
+            catch {
+                # Anything else means the question was not answered.
+                $state = 'unknown'
+            }
+
+            if ($state -ceq 'gone') { break }
+            if ([DateTime]::UtcNow -gt $deadline) {
+                if ($state -ceq 'alive') { $gone = $false } else { $verified = $false }
+                break
+            }
             Start-Sleep -Milliseconds 50
         }
     }
-    return $true
+    return [pscustomobject]@{ gone = $gone; verified = $verified }
 }
 
-# Runs one child under a time limit and reports whether everything it started
-# is gone afterwards. Killing cmd would leave the PowerShell it started
-# running, so the timeout path takes the tree with taskkill /T.
+# taskkill under its own limit. Left unbounded it is simply one more way for
+# the suite to hang, and its output is drained so it cannot block on a full
+# pipe. /T takes the tree below this id only, so nothing this test did not
+# start is touched, including on the abnormal paths.
+function Invoke-ProcessTreeTermination {
+    param(
+        [Parameter(Mandatory = $true)][int]$ProcessId,
+        [ValidateRange(1000, 60000)][int]$TimeoutMilliseconds = 15000
+    )
+
+    $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+    $startInfo.FileName = Join-Path $env:SystemRoot 'System32\taskkill.exe'
+    $startInfo.Arguments = '/T /F /PID ' + $ProcessId
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+
+    $killer = New-Object System.Diagnostics.Process
+    $killer.StartInfo = $startInfo
+    try {
+        if (-not $killer.Start()) { return $false }
+        $null = $killer.StandardOutput.ReadToEndAsync()
+        $null = $killer.StandardError.ReadToEndAsync()
+        if (-not $killer.WaitForExit($TimeoutMilliseconds)) {
+            try { $killer.Kill() } catch {
+                Write-Verbose 'taskkill cleanup did not need a Kill call.'
+            }
+            return $false
+        }
+        return $true
+    }
+    catch {
+        return $false
+    }
+    finally {
+        $killer.Dispose()
+    }
+}
+
+# Runs one child under a time limit and reports, as separate states, whether
+# it finished in time, whether its exit was observed, whether its output was
+# collected, whether the kill completed, and whether everything it started is
+# gone.
+#
+# Waiting on cmd proves nothing about the PowerShell cmd started, and reading
+# that output without a limit can block on a pipe a surviving grandchild still
+# holds, which would hand back the hang the timeout just removed. Every wait
+# here is therefore bounded, and a wait that runs out is reported rather than
+# folded into a clean result.
 function Invoke-SumiGuardTestProcess {
     param(
         [Parameter(Mandatory = $true)][string]$FileName,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
-        [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000
+        [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000,
+        [ValidateRange(1000, 60000)][int]$ShutdownTimeoutMilliseconds = 15000
     )
 
     $startInfo = New-Object System.Diagnostics.ProcessStartInfo
@@ -236,51 +316,80 @@ function Invoke-SumiGuardTestProcess {
 
     $process = New-Object System.Diagnostics.Process
     $process.StartInfo = $startInfo
-    $stdoutTask = $null
-    $stderrTask = $null
     $timedOut = $false
+    $killCompleted = $true
+    $exitObserved = $false
+    $outputComplete = $false
+    $enumerationOk = $true
     $observed = @()
+    $stdout = ''
+    $stderr = ''
+    $exitCode = $null
     try {
         if (-not $process.Start()) {
             throw [System.InvalidOperationException]::new('test child process did not start')
         }
+        # Both reads start before any wait so a full pipe cannot block the child.
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
 
+        # One look for the grandchild while the run is still in progress. A run
+        # that finishes first simply has nothing to list, which is not a leak.
         if (-not $process.WaitForExit(250)) {
-            $observed = @(Get-ChildProcessId -ParentId $process.Id)
+            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
+            $enumerationOk = $snapshot.ok
+            $observed = @($snapshot.ids)
         }
 
-        if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-            $timedOut = $true
-            if ($observed.Count -eq 0) {
-                $observed = @(Get-ChildProcessId -ParentId $process.Id)
-            }
-            $null = & (Join-Path $env:SystemRoot 'System32\taskkill.exe') '/T' '/F' '/PID' $process.Id 2>&1
-            $process.WaitForExit()
+        if ($process.WaitForExit($TimeoutMilliseconds)) {
+            $exitObserved = $true
         }
         else {
-            $process.WaitForExit()
+            $timedOut = $true
+            if ($observed.Count -eq 0 -and $enumerationOk) {
+                $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
+                $enumerationOk = $snapshot.ok
+                $observed = @($snapshot.ids)
+            }
+            $killCompleted = Invoke-ProcessTreeTermination -ProcessId $process.Id `
+                -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
+            $exitObserved = $process.WaitForExit($ShutdownTimeoutMilliseconds)
         }
 
-        $stdout = [string]$stdoutTask.GetAwaiter().GetResult()
-        $stderr = [string]$stderrTask.GetAwaiter().GetResult()
-        $exitCode = $process.ExitCode
+        $outputComplete = $true
+        if ($stdoutTask.Wait($ShutdownTimeoutMilliseconds)) { $stdout = [string]$stdoutTask.Result }
+        else { $outputComplete = $false }
+        if ($stderrTask.Wait($ShutdownTimeoutMilliseconds)) { $stderr = [string]$stderrTask.Result }
+        else { $outputComplete = $false }
+
+        if ($exitObserved) {
+            try { $exitCode = $process.ExitCode } catch { $exitCode = $null }
+        }
     }
     finally {
-        try { if (-not $process.HasExited) { $process.Kill() } } catch {
-            Write-Verbose 'Child cleanup did not need a Kill call.'
+        # Last resort, still scoped to this run's own tree.
+        try {
+            if (-not $process.HasExited) { $null = Invoke-ProcessTreeTermination -ProcessId $process.Id }
+        }
+        catch {
+            Write-Verbose 'Final tree cleanup could not run.'
         }
         $process.Dispose()
     }
 
+    $reap = Test-ProcessIdGone -ProcessId $observed
     return [pscustomobject][ordered]@{
         exit_code = $exitCode
         timed_out = $timedOut
+        exit_observed = $exitObserved
+        output_complete = $outputComplete
+        kill_completed = $killCompleted
+        observed_descendants = $observed.Count
+        descendants_enumerated = $enumerationOk
+        descendants_reaped = $reap.gone
+        descendants_verified = ($reap.verified -and $enumerationOk)
         stdout_text = $stdout
         stderr_text = $stderr
-        observed_descendants = $observed.Count
-        descendants_reaped = (Test-ProcessIdGone -ProcessId $observed)
     }
 }
 
@@ -345,6 +454,8 @@ function Invoke-Hook {
     $script:childStartCount++
     if ($run.timed_out) { $script:timedOutCount++ }
     if (-not $run.descendants_reaped) { $script:unreapedCount++ }
+    if (-not ($run.descendants_verified -and $run.output_complete -and
+        $run.exit_observed -and $run.kill_completed)) { $script:unverifiedCount++ }
     $stdout = [string]$run.stdout_text
     $exitCode = $run.exit_code
 
@@ -430,6 +541,57 @@ try {
     }
     $script:stage = 'add/HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT'
     Add-Result 'HOOK_SOURCE_NEVER_EXECUTES_COMMAND_TEXT' $sourceClean
+
+    # Control for the waiting machinery itself. Every other case here finishes
+    # on its own, so none of them exercises the timeout, the tree kill or the
+    # reap check, and all of those could be broken while the suite stayed
+    # green. This child waits far longer than its limit on purpose: the run has
+    # to come back inside the limit, the PowerShell under cmd has to be seen
+    # and then confirmed gone, and every bounded wait has to have completed.
+    #
+    # The helper is called directly rather than through Invoke-Hook, so this
+    # deliberate timeout is not counted against the run.
+    try {
+        $script:stage = 'assert/waiting-child-control'
+        $sleeper = '"' + $powerShell51 + '" -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 120"'
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $controlRun = Invoke-SumiGuardTestProcess `
+            -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
+            -Arguments ('/s /c "' + $sleeper + '"') `
+            -TimeoutMilliseconds 3000
+        $watch.Stop()
+        $script:childStartCount++
+        $script:stage = 'add/WAITING_CHILD_RETURNS_WITHIN_LIMIT_AND_IS_REAPED'
+        Add-Result 'WAITING_CHILD_RETURNS_WITHIN_LIMIT_AND_IS_REAPED' (
+            [bool]$controlRun.timed_out -and
+            # Well under the 120s the child asked for: the limit, not the
+            # child, decided when this returned.
+            $watch.Elapsed.TotalSeconds -lt 60 -and
+            [int]$controlRun.observed_descendants -ge 1 -and
+            [bool]$controlRun.descendants_enumerated -and
+            [bool]$controlRun.descendants_verified -and
+            [bool]$controlRun.descendants_reaped -and
+            [bool]$controlRun.kill_completed -and
+            [bool]$controlRun.exit_observed -and
+            [bool]$controlRun.output_complete) -Observed @{
+                elapsed_seconds = [math]::Round($watch.Elapsed.TotalSeconds, 1)
+                timed_out = [bool]$controlRun.timed_out
+                observed_descendants = [int]$controlRun.observed_descendants
+                descendants_enumerated = [bool]$controlRun.descendants_enumerated
+                descendants_verified = [bool]$controlRun.descendants_verified
+                descendants_reaped = [bool]$controlRun.descendants_reaped
+                kill_completed = [bool]$controlRun.kill_completed
+                exit_observed = [bool]$controlRun.exit_observed
+                output_complete = [bool]$controlRun.output_complete
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_WAITING_CHILD_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
 
     # 1. The profile accepts an event with no turn_id, and nothing stands in for
     #    the absent field.
@@ -765,7 +927,8 @@ finally {
         # A leftover temporary root or a child that outlived its run is a
         # failed run, not a footnote under a successful one.
         success = ($failed.Count -eq 0 -and $null -eq $failure -and
-            $workRootRemoved -and $script:timedOutCount -eq 0 -and $script:unreapedCount -eq 0)
+            $workRootRemoved -and $script:timedOutCount -eq 0 -and $script:unreapedCount -eq 0 -and
+            $script:unverifiedCount -eq 0)
         powershell_version = $PSVersionTable.PSVersion.ToString()
         failure_stage = $(if ($null -eq $failure) { $null } else { [string]$failure.stage })
         failure_line = $(if ($null -eq $failure) { $null } else { [int]$failure.script_line_number })
@@ -780,6 +943,7 @@ finally {
         hook_child_processes_started = $childStartCount
         child_processes_timed_out = $script:timedOutCount
         child_processes_left_running = $script:unreapedCount
+        child_process_state_unverified = $script:unverifiedCount
         command_inputs_executed = $false
         body_store_written = $false
         network_access_performed = $false
@@ -790,3 +954,5 @@ finally {
 
     if ($summary.success) { exit 0 } else { exit 1 }
 }
+
+
