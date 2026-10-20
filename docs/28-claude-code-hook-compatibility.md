@@ -15,7 +15,7 @@
 | 根拠 | 確認内容 |
 |---|---|
 | 公式フック仕様 | [Claude Code hooks](https://code.claude.com/docs/en/hooks)。`PreToolUse` の入力・出力・終了コード・matcher・既定タイムアウト |
-| ローカル実装 | `C:\Users\kumon\.local\bin\claude.exe`、`2.1.304`。フック入力の組み立て、共通フィールドのスキーマ、出力スキーマを実体で確認 |
+| ローカル実装 | `%USERPROFILE%\.local\bin\claude.exe`、`2.1.304`。フック入力の組み立て、共通フィールドのスキーマ、出力スキーマを実体で確認 |
 | 既存設計 | `docs/23` 段階5、`docs/24` の信頼境界 |
 
 公式資料だけでなく実装を併せて確認したのは、`turn_id` の有無が文書の節をまたいでおり、資料だけでは
@@ -190,7 +190,7 @@ Codex 側の算出式は変更していないため、既存ストアの ID は�
 
 このため試験は、厳密なバイト列をファイルへ書き、シェルのリダイレクトで子プロセスの標準入力に
 与えます。いずれのプロセスでもコンソール符号化を変更していません（`console_encoding_modified=false`）。
-親コンソールが `utf-8` の場合と `shift_jis` の場合の双方で 17/17 PASS を確認しており、
+親コンソールが `utf-8` の場合と `shift_jis` の場合の双方で 28/28 PASS を確認しており、
 結果がコードページに依存しないことを示します。
 
 ### 既存試験への影響
@@ -207,7 +207,7 @@ Codex 側の算出式は変更していないため、既存ストアの ID は�
 
 ## 試験
 
-stdin の回帰試験 `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`（17判定）を追加しました。
+stdin の回帰試験 `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`（28判定）を追加しました。
 BOM なし ASCII、BOM なし日本語、BOM なし絵文字（BMP 外）、先頭 BOM、内部 BOM、不正 UTF-8、
 UTF-16、空入力、不正 JSON、直接入力を、Codex・Claude 両プロファイルで確認します。
 正常系は、記録件数が1件であることと、元のコマンド文字列から計算した UTF-8 SHA-256 が
@@ -224,7 +224,7 @@ UTF-16、空入力、不正 JSON、直接入力を、Codex・Claude 両プロフ
 終了したことを猶予付きで確認します。一時領域の削除失敗、時間上限超過、子プロセスの残存は
 いずれも `success=false` と終了コード1に反映します（判定がすべて通っていても失敗扱いです）。
 
-新規の合成試験 `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`（23判定）を追加し、
+新規の合成試験 `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`（36判定）を追加し、
 DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず、`-TestIntentSaveOutcome TEST_SUCCESS`
 でアダプタを代替するため、共有ランナーでも実行できます。DPAPI 依存の3試験は従来どおり CI から
 除外したままで、本試験を混入させていません。
@@ -239,4 +239,4 @@ DPAPI 非依存の CI 試験一覧へ登録しました。本文は保存せず�
 
 - 実 Claude ホストへの接続と、フックへ到達したうえでの検証。
 - 運用ストアの使用、恒久フック登録、グローバル設定の変更、Release。
-- `master` へのマージ、push、PR 作成。
+- `master` へのマージ。
