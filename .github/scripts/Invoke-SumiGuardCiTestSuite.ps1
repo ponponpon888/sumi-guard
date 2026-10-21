@@ -30,6 +30,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-CommandAssessmentHookIntegrationTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-CommandAssessmentTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-EnforcementDecisionSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-HookAssessmentStoreAdapterTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedAssessmentStoreDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationConnectionTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
