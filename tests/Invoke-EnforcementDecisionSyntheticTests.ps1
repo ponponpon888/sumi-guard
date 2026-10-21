@@ -8,7 +8,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $manifest = Join-Path $root 'src\SumiGuard.EnforcementDecision\SumiGuard.EnforcementDecision.psd1'
 Import-Module -Name $manifest -Force -ErrorAction Stop
 
-function New-TestAdapterResult {
+function Get-TestAdapterResult {
     param(
         [Parameter(Mandatory = $true)][string]$Status,
         [bool]$Success = $false,
@@ -26,12 +26,12 @@ function New-TestAdapterResult {
     }
 }
 
-$complete = New-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'SAVED' -BodyState 'SAVED'
-$metadataOnly = New-TestAdapterResult -Status 'EVENT_SAVED_METADATA_ONLY' -Success $true -EventState 'SAVED' -BodyState 'OMITTED_BY_POLICY'
-$partial = New-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED'
-$failed = New-TestAdapterResult -Status 'EXECUTION_STORE_VALIDATION_FAILED'
-$hashFailed = New-TestAdapterResult -Status 'BODY_HASH_FAILED'
-$eventFailed = New-TestAdapterResult -Status 'EVENT_SAVE_FAILED_BODY_ORPHANED' -BodyState 'SAVED_ORPHANED'
+$complete = Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'SAVED' -BodyState 'SAVED'
+$metadataOnly = Get-TestAdapterResult -Status 'EVENT_SAVED_METADATA_ONLY' -Success $true -EventState 'SAVED' -BodyState 'OMITTED_BY_POLICY'
+$partial = Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED'
+$failed = Get-TestAdapterResult -Status 'EXECUTION_STORE_VALIDATION_FAILED'
+$hashFailed = Get-TestAdapterResult -Status 'BODY_HASH_FAILED'
+$eventFailed = Get-TestAdapterResult -Status 'EVENT_SAVE_FAILED_BODY_ORPHANED' -BodyState 'SAVED_ORPHANED'
 
 $cases = @(
     [pscustomobject]@{ name = 'default_monitor'; mode = 'MONITOR'; route = $false; input = 'VALID'; adapter = $null; action = 'ALLOW'; reason = 'MONITOR_ONLY'; effective = 'MONITOR' },
@@ -44,14 +44,14 @@ $cases = @(
     [pscustomobject]@{ name = 'execution_store_validation_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $failed; action = 'DENY'; reason = 'STORE_VALIDATION_FAILED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'body_hash_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $hashFailed; action = 'DENY'; reason = 'BODY_HASH_FAILED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'event_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $eventFailed; action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'metadata_event_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'EVENT_SAVE_FAILED_METADATA_ONLY'); action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'event_and_body_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'EVENT_AND_BODY_SAVE_FAILED'); action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'metadata_event_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVE_FAILED_METADATA_ONLY'); action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'event_and_body_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVE_FAILED'); action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'missing_adapter_result_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $null; action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'success_flag_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -EventState 'SAVED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'event_state_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'FAILED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'body_state_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'SAVED' -BodyState 'FAILED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'unknown_status_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'UNKNOWN_STATUS' -Success $true -EventState 'SAVED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
-    [pscustomobject]@{ name = 'invalid_execution_id_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (New-TestAdapterResult -Status 'INVALID_EXECUTION_ID'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' }
+    [pscustomobject]@{ name = 'success_flag_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -EventState 'SAVED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'event_state_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'FAILED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'body_state_mismatch_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'SAVED' -BodyState 'FAILED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'unknown_status_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'UNKNOWN_STATUS' -Success $true -EventState 'SAVED' -BodyState 'SAVED'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'invalid_execution_id_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'INVALID_EXECUTION_ID'); action = 'DENY'; reason = 'RECORDING_NOT_VERIFIED'; effective = 'ENFORCE_RECORDING' }
 )
 
 $results = New-Object System.Collections.Generic.List[object]
@@ -90,12 +90,6 @@ foreach ($case in $cases) {
         passed = [bool]$passed
         observed_reason_code = $observedReason
     })
-    if ($passed) {
-        Write-Host ('PASS ' + $case.name)
-    }
-    else {
-        Write-Host ('FAIL ' + $case.name)
-    }
 }
 
 $exported = @(Get-Command -Module SumiGuard.EnforcementDecision -CommandType Function | Select-Object -ExpandProperty Name)
@@ -105,8 +99,6 @@ $results.Add([pscustomobject][ordered]@{
     passed = [bool]$exportsOk
     observed_reason_code = if ($exportsOk) { 'EXPECTED_EXPORTS' } else { 'UNEXPECTED_EXPORTS' }
 })
-if ($exportsOk) { Write-Host 'PASS only_one_readonly_policy_function_exported' }
-else { Write-Host 'FAIL only_one_readonly_policy_function_exported' }
 
 $allPassed = (@($results | Where-Object { -not $_.passed }).Count -eq 0)
 $summary = [pscustomobject][ordered]@{
