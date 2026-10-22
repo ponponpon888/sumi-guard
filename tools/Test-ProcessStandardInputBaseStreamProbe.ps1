@@ -138,7 +138,27 @@ try {
         $process.StartInfo = $startInfo
         $processStarted = $false
         try {
-            if (-not $process.Start()) { throw 'The probe child did not start.' }
+            $savedConsoleInputEncoding = $null
+            $consoleInputEncodingNeutralized = $false
+            try {
+                $savedConsoleInputEncoding = [Console]::InputEncoding
+                if ($savedConsoleInputEncoding.GetPreamble().Length -gt 0) {
+                    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                    $consoleInputEncodingNeutralized = $true
+                }
+            }
+            catch {
+                throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception)
+            }
+            try {
+                if (-not $process.Start()) { throw 'The probe child did not start.' }
+            }
+            finally {
+                if ($consoleInputEncodingNeutralized) {
+                    try { [Console]::InputEncoding = $savedConsoleInputEncoding }
+                    catch { throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception) }
+                }
+            }
             $processStarted = $true
             $stdoutTask = $process.StandardOutput.ReadToEndAsync()
             $stderrTask = $process.StandardError.ReadToEndAsync()
@@ -147,6 +167,15 @@ try {
             [byte[]]$payload = $case.bytes
             $standardInput = $process.StandardInput
             try {
+                # .NET Framework creates StandardInput's StreamWriter at
+                # Start using Console.InputEncoding. A preamble can be sent
+                # before BaseStream: UTF-8 BOM made {} arrive as 5 bytes
+                # (EF BB BF 7B 7D) in the measured reproduction.
+                try { $standardInputPreambleLength = $standardInput.Encoding.GetPreamble().Length }
+                catch { throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception) }
+                if ($standardInputPreambleLength -ne 0) {
+                    throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED')
+                }
                 # This is intentionally the underlying pipe stream, not any
                 # StreamWriter text API. Close sends EOF after all bytes flush.
                 $standardInput.BaseStream.Write($payload, 0, $payload.Length)

@@ -611,8 +611,30 @@ function Invoke-SumiGuardTestProcess {
     $script:LastReapResult = $null
     $script:LastReapFailed = $false
     try {
-        if (-not $process.Start()) {
-            throw [System.InvalidOperationException]::new('test child process did not start')
+        $savedConsoleInputEncoding = $null
+        $consoleInputEncodingNeutralized = $false
+        if ($SendStandardInput) {
+            try {
+                $savedConsoleInputEncoding = [Console]::InputEncoding
+                if ($savedConsoleInputEncoding.GetPreamble().Length -gt 0) {
+                    [Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)
+                    $consoleInputEncodingNeutralized = $true
+                }
+            }
+            catch {
+                throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception)
+            }
+        }
+        try {
+            if (-not $process.Start()) {
+                throw [System.InvalidOperationException]::new('test child process did not start')
+            }
+        }
+        finally {
+            if ($consoleInputEncodingNeutralized) {
+                try { [Console]::InputEncoding = $savedConsoleInputEncoding }
+                catch { throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception) }
+            }
         }
         $processStarted = $true
         # Both reads start before any wait so a full pipe cannot block the child.
@@ -654,8 +676,18 @@ function Invoke-SumiGuardTestProcess {
             $writeWaitHandle = $null
             try {
                 $standardInput = $process.StandardInput
-                # Do not use StreamWriter text methods here.  stdin.bin was
-                # read as bytes, and the exact same bytes go to the child.
+                # .NET Framework creates StandardInput's StreamWriter at
+                # Start using Console.InputEncoding. A preamble can be sent
+                # before BaseStream: UTF-8 BOM made {} arrive as 5 bytes
+                # (EF BB BF 7B 7D) in the measured reproduction.
+                try { $standardInputPreambleLength = $standardInput.Encoding.GetPreamble().Length }
+                catch { throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED', $_.Exception) }
+                if ($standardInputPreambleLength -ne 0) {
+                    throw [System.InvalidOperationException]::new('STDIN_PREAMBLE_NOT_NEUTRALIZED')
+                }
+                # Do not use StreamWriter text methods after the guard.
+                # stdin.bin was read as bytes, and those exact bytes go to
+                # the child.
                 $write = $standardInput.BaseStream.BeginWrite(
                     $StandardInputBytes, 0, $StandardInputBytes.Length, $null, $null)
                 $writeWaitHandle = $write.AsyncWaitHandle
@@ -1276,6 +1308,52 @@ try {
     }
     catch {
         Add-Result 'CASE_EXCEPTION_THROW_AFTER_OBSERVATION_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # The direct transport must remain byte-exact even when the parent console
+    # itself has a UTF-8 preamble. The child only reads raw stdin and returns
+    # its bytes as Base64; it creates no descendants.
+    try {
+        $script:stage = 'assert/stdin-bytes-exact-under-utf8-preamble-console'
+        [byte[]]$exactInput = @(0x7b, 0x7d)
+        $rawReader = '$stream = [Console]::OpenStandardInput(); try { $buffer = New-Object byte[] 16; $bytes = New-Object System.Collections.Generic.List[byte]; while (($read = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) { for ($index = 0; $index -lt $read; $index++) { $bytes.Add($buffer[$index]) } }; [Convert]::ToBase64String($bytes.ToArray()) } finally { $stream.Dispose() }'
+        $rawReaderEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rawReader))
+        $originalInputEncoding = [Console]::InputEncoding
+        $exactRun = $null
+        try {
+            [Console]::InputEncoding = [Text.Encoding]::UTF8
+            $exactRun = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+                -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $rawReaderEncoded) `
+                -SendStandardInput -StandardInputBytes $exactInput
+        }
+        finally {
+            [Console]::InputEncoding = $originalInputEncoding
+        }
+        $script:childStartCount++
+        [byte[]]$receivedBytes = [Convert]::FromBase64String([string]$exactRun.stdout_text.Trim())
+        $bytesExact = ($receivedBytes.Length -eq $exactInput.Length)
+        if ($bytesExact) {
+            for ($index = 0; $index -lt $exactInput.Length; $index++) {
+                if ($receivedBytes[$index] -ne $exactInput[$index]) { $bytesExact = $false; break }
+            }
+        }
+        $script:stage = 'add/STDIN_BYTES_EXACT_UNDER_UTF8_PREAMBLE_CONSOLE'
+        Add-Result 'STDIN_BYTES_EXACT_UNDER_UTF8_PREAMBLE_CONSOLE' (
+            $bytesExact -and [bool]$exactRun.exit_observed -and
+            [bool]$exactRun.output_complete -and [bool]$exactRun.descendants_reaped -and
+            [bool]$exactRun.descendants_verified -and (-not [bool]$exactRun.timed_out) -and
+            ([Console]::InputEncoding.CodePage -eq $originalInputEncoding.CodePage)) -Observed @{
+                sent_byte_count = $exactInput.Length; received_byte_count = $receivedBytes.Length
+                received_first_byte = $(if ($receivedBytes.Length -eq 0) { $null } else { ('{0:x2}' -f $receivedBytes[0]) })
+                input_encoding_restored = ([Console]::InputEncoding.CodePage -eq $originalInputEncoding.CodePage)
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_STDIN_BYTES_EXACT_UNDER_UTF8_PREAMBLE_CONSOLE' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
