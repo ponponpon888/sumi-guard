@@ -38,10 +38,13 @@ $script:unreapedCount = 0
 # A run whose waits could not be completed, or whose children could not be
 # checked, has not shown that it left nothing behind. That is a failure too.
 $script:unverifiedCount = 0
+$script:unverifiedCases = New-Object System.Collections.Generic.List[object]
+$script:hookExecutionOrdinal = 0
 # The hook starts no processes of its own, so a child that had to be
 # terminated after its launcher exited is an unexpected leftover, not
 # routine cleanup.
 $script:orphanCount = 0
+$script:assessmentStoreSetupStatus = $null
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-claude-hook-' + [Guid]::NewGuid().ToString('N'))
 
 function Add-Result {
@@ -56,6 +59,10 @@ function Add-Result {
     $row = [ordered]@{ name = $Name; pass = $Pass }
     if ($null -ne $Observed) {
         $row['observed'] = [pscustomobject]$Observed
+    }
+    if (-not $Pass -and $script:stage -like '*/store-setup' -and
+        $null -ne $script:assessmentStoreSetupStatus) {
+        $row['assessment_store_setup_status'] = $script:assessmentStoreSetupStatus
     }
     $results.Add([pscustomobject]$row)
 }
@@ -229,11 +236,20 @@ function Get-ObservedChildRegistration {
         catch {
             # Access denied and everything else: the child may well be running
             # and we simply cannot establish what it is.
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'OPEN_FAILED'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'OPEN_FAILED'; handle = $null; started = $null
+                diagnostic = [pscustomobject][ordered]@{
+                    reason_code = 'OPEN_FAILED'; stage = 'CHILD_OPEN_PROCESS'
+                    exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+                }
+            }
         }
 
         if ($null -eq $handle) {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'OPEN_RETURNED_NOTHING'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'OPEN_RETURNED_NOTHING'; handle = $null; started = $null
+                diagnostic = [pscustomobject]@{ reason_code = 'OPEN_RETURNED_NOTHING'; stage = 'CHILD_OPEN_PROCESS' }
+            }
         }
 
         # Force the native handle now. Until this is touched the pid is not
@@ -243,7 +259,13 @@ function Get-ObservedChildRegistration {
             $null = $handle.SafeHandle
         }
         catch {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'HANDLE_NOT_ACQUIRED'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'HANDLE_NOT_ACQUIRED'; handle = $null; started = $null
+                diagnostic = [pscustomobject][ordered]@{
+                    reason_code = 'HANDLE_NOT_ACQUIRED'; stage = 'CHILD_PIN_HANDLE'
+                    exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+                }
+            }
         }
 
         $started = $null
@@ -251,7 +273,13 @@ function Get-ObservedChildRegistration {
             $started = $handle.StartTime
         }
         catch {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'START_TIME_UNREADABLE'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'START_TIME_UNREADABLE'; handle = $null; started = $null
+                diagnostic = [pscustomobject][ordered]@{
+                    reason_code = 'START_TIME_UNREADABLE'; stage = 'CHILD_READ_START_TIME'
+                    exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+                }
+            }
         }
 
         $current = $null
@@ -259,22 +287,40 @@ function Get-ObservedChildRegistration {
             $current = & $ReadCurrent $ChildId
         }
         catch {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_FAILED'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'RECHECK_FAILED'; handle = $null; started = $null
+                diagnostic = [pscustomobject][ordered]@{
+                    reason_code = 'RECHECK_FAILED'; stage = 'CHILD_RECHECK_PROCESS'
+                    exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+                }
+            }
         }
 
         if ($null -eq $current) {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_EMPTY'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'RECHECK_EMPTY'; handle = $null; started = $null
+                diagnostic = [pscustomobject]@{ reason_code = 'RECHECK_EMPTY'; stage = 'CHILD_RECHECK_PROCESS' }
+            }
         }
         if ([string]$current.Name -notlike 'powershell*') {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_IDENTITY_CHANGED'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'RECHECK_IDENTITY_CHANGED'; handle = $null; started = $null
+                diagnostic = [pscustomobject]@{ reason_code = 'RECHECK_IDENTITY_CHANGED'; stage = 'CHILD_RECHECK_PROCESS' }
+            }
         }
         if ($null -eq $current.CreationDate) {
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'RECHECK_TIMESTAMP_MISSING'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'RECHECK_TIMESTAMP_MISSING'; handle = $null; started = $null
+                diagnostic = [pscustomobject]@{ reason_code = 'RECHECK_TIMESTAMP_MISSING'; stage = 'CHILD_RECHECK_PROCESS' }
+            }
         }
         if (([DateTime]$current.CreationDate) -ne $CreatedAtFirstRead) {
             # The pid changed hands between the two reads that bracket the
             # handle. Whatever is there now is not what was listed.
-            return [pscustomobject]@{ action = 'unreliable'; reason = 'IDENTITY_CHANGED'; handle = $null; started = $null }
+            return [pscustomobject]@{
+                action = 'unreliable'; reason = 'IDENTITY_CHANGED'; handle = $null; started = $null
+                diagnostic = [pscustomobject]@{ reason_code = 'IDENTITY_CHANGED'; stage = 'CHILD_RECHECK_PROCESS' }
+            }
         }
 
         $keepHandle = $true
@@ -310,13 +356,20 @@ function Get-ChildProcessSnapshot {
     }
 
     $found = New-Object System.Collections.Generic.List[object]
+    $diagnostics = New-Object System.Collections.Generic.List[object]
     $ok = $true
     try {
         foreach ($entry in @(Get-CimInstance -ClassName Win32_Process `
             -Filter "ParentProcessId=$ParentId" -ErrorAction Stop)) {
 
             if ([string]$entry.Name -notlike 'powershell*') { continue }
-            if ($null -eq $entry.CreationDate) { $ok = $false; continue }
+            if ($null -eq $entry.CreationDate) {
+                $ok = $false
+                $diagnostics.Add([pscustomobject]@{
+                    reason_code = 'CHILD_CREATION_TIMESTAMP_MISSING'; stage = 'CHILD_SNAPSHOT_ENTRY'
+                })
+                continue
+            }
 
             $registration = Get-ObservedChildRegistration `
                 -ChildId ([int]$entry.ProcessId) `
@@ -333,9 +386,10 @@ function Get-ChildProcessSnapshot {
             }
             elseif ($registration.action -ceq 'unreliable') {
                 $ok = $false
+                if ($null -ne $registration.diagnostic) { $diagnostics.Add($registration.diagnostic) }
             }
         }
-        return [pscustomobject]@{ ok = $ok; items = $found.ToArray() }
+        return [pscustomobject]@{ ok = $ok; items = $found.ToArray(); diagnostics = $diagnostics.ToArray() }
     }
     catch {
         foreach ($item in $found) {
@@ -343,7 +397,11 @@ function Get-ChildProcessSnapshot {
                 Write-Verbose 'Observed child handle was already released.'
             }
         }
-        return [pscustomobject]@{ ok = $false; items = @() }
+        $diagnostics.Add([pscustomobject][ordered]@{
+            reason_code = 'CHILD_SNAPSHOT_QUERY_FAILED'; stage = 'CHILD_SNAPSHOT_QUERY'
+            exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+        })
+        return [pscustomobject]@{ ok = $false; items = @(); diagnostics = $diagnostics.ToArray() }
     }
 }
 
@@ -509,6 +567,12 @@ function Invoke-SumiGuardTestProcess {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
         [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000,
         [ValidateRange(1000, 60000)][int]$ShutdownTimeoutMilliseconds = 15000,
+        # Only the normal hook path opts into this.  Keeping it separate from
+        # the byte[] value makes an empty hook event an intentional EOF-only
+        # input rather than indistinguishable from the control tests.
+        [switch]$SendStandardInput,
+        [AllowEmptyCollection()][byte[]]$StandardInputBytes,
+        [scriptblock]$SnapshotProvider,
         # Test seam for the finally path: fails the run at the one moment
         # where children exist but nothing has cleaned them up yet.
         [switch]$TestThrowAfterObservation
@@ -519,7 +583,7 @@ function Invoke-SumiGuardTestProcess {
     $startInfo.Arguments = $Arguments
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardInput = $false
+    $startInfo.RedirectStandardInput = [bool]$SendStandardInput
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
 
@@ -530,12 +594,16 @@ function Invoke-SumiGuardTestProcess {
     $exitObserved = $false
     $outputComplete = $false
     $enumerationOk = $true
+    $descendantUnverifiedReasonCodes = New-Object System.Collections.Generic.List[string]
+    $childSnapshotDiagnostics = New-Object System.Collections.Generic.List[object]
     $observed = New-Object System.Collections.Generic.List[object]
     $seenIds = New-Object System.Collections.Generic.HashSet[int]
     $reap = $null
     $stdout = ''
     $stderr = ''
     $exitCode = $null
+    $processStarted = $false
+    $collectSnapshot = $null
     $script:LastObservedChildIds = @()
     $script:LastReapResult = $null
     $script:LastReapFailed = $false
@@ -543,9 +611,81 @@ function Invoke-SumiGuardTestProcess {
         if (-not $process.Start()) {
             throw [System.InvalidOperationException]::new('test child process did not start')
         }
+        $processStarted = $true
         # Both reads start before any wait so a full pipe cannot block the child.
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        if ($null -eq $SnapshotProvider) {
+            $SnapshotProvider = { param($parentId) Get-ChildProcessSnapshot -ParentId $parentId }
+        }
+        $collectSnapshot = {
+            $snapshot = $null
+            try { $snapshot = & $SnapshotProvider $process.Id }
+            catch {
+                $enumerationOk = $false
+                $childSnapshotDiagnostics.Add([pscustomobject][ordered]@{
+                    reason_code = 'CHILD_SNAPSHOT_QUERY_FAILED'; stage = 'CHILD_SNAPSHOT_QUERY'
+                    exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
+                })
+                if (-not $descendantUnverifiedReasonCodes.Contains('CHILD_SNAPSHOT_UNVERIFIED')) {
+                    $descendantUnverifiedReasonCodes.Add('CHILD_SNAPSHOT_UNVERIFIED')
+                }
+            }
+            if ($null -ne $snapshot -and -not $snapshot.ok) {
+                $enumerationOk = $false
+                foreach ($diagnostic in @($snapshot.diagnostics)) { $childSnapshotDiagnostics.Add($diagnostic) }
+                if (-not $descendantUnverifiedReasonCodes.Contains('CHILD_SNAPSHOT_UNVERIFIED')) {
+                    $descendantUnverifiedReasonCodes.Add('CHILD_SNAPSHOT_UNVERIFIED')
+                }
+            }
+            if ($null -ne $snapshot) {
+                foreach ($item in @($snapshot.items)) {
+                    if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
+                }
+            }
+        }
+        . $collectSnapshot
+
+        if ($SendStandardInput) {
+            $standardInput = $null
+            $writeWaitHandle = $null
+            try {
+                $standardInput = $process.StandardInput
+                # Do not use StreamWriter text methods here.  stdin.bin was
+                # read as bytes, and the exact same bytes go to the child.
+                $write = $standardInput.BaseStream.BeginWrite(
+                    $StandardInputBytes, 0, $StandardInputBytes.Length, $null, $null)
+                $writeWaitHandle = $write.AsyncWaitHandle
+                $writeDeadline = [DateTime]::UtcNow.AddMilliseconds($ShutdownTimeoutMilliseconds)
+                while (-not $writeWaitHandle.WaitOne(100)) {
+                    # The input pipe can be full while the child creates its
+                    # own PowerShell child. Keep pinning during that interval.
+                    . $collectSnapshot
+                    if ([DateTime]::UtcNow -ge $writeDeadline) {
+                        throw [System.TimeoutException]::new('standard input write timed out')
+                    }
+                }
+                $standardInput.BaseStream.EndWrite($write)
+                $standardInput.BaseStream.Flush()
+            }
+            finally {
+                if ($null -ne $writeWaitHandle) {
+                    try { $writeWaitHandle.Dispose() } catch {
+                        Write-Verbose 'Standard input write wait handle was already released.'
+                    }
+                }
+                # Closing the writer closes its underlying pipe and delivers
+                # EOF; it does not write text or an encoding preamble.
+                if ($null -ne $standardInput) {
+                    try { $standardInput.Close() } catch {
+                        Write-Verbose 'Standard input pipe was already closed.'
+                    }
+                    try { $standardInput.Dispose() } catch {
+                        Write-Verbose 'Standard input writer was already released.'
+                    }
+                }
+            }
+        }
 
         # Children can only be enumerated while their parent is alive, so the
         # looks happen early and more than once. A launcher that exits first
@@ -553,11 +693,7 @@ function Invoke-SumiGuardTestProcess {
         # them afterwards possible at all.
         foreach ($waitMs in @(250, 750)) {
             if ($process.WaitForExit($waitMs)) { break }
-            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-            if (-not $snapshot.ok) { $enumerationOk = $false }
-            foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
-            }
+            . $collectSnapshot
         }
         $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
 
@@ -570,11 +706,7 @@ function Invoke-SumiGuardTestProcess {
         }
         else {
             $timedOut = $true
-            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-            if (-not $snapshot.ok) { $enumerationOk = $false }
-            foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
-            }
+            . $collectSnapshot
             $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
             $killCompleted = Invoke-ProcessTreeTermination -ProcessId $process.Id `
                 -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
@@ -588,6 +720,10 @@ function Invoke-SumiGuardTestProcess {
         $reap = Invoke-ObservedProcessReap -Observed $observed.ToArray() `
             -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
         $script:LastReapResult = $reap
+        if (-not $reap.verified -and
+            -not $descendantUnverifiedReasonCodes.Contains('CHILD_REAP_UNVERIFIED')) {
+            $descendantUnverifiedReasonCodes.Add('CHILD_REAP_UNVERIFIED')
+        }
 
         $outputComplete = $true
         if ($stdoutTask.Wait($ShutdownTimeoutMilliseconds)) { $stdout = [string]$stdoutTask.Result }
@@ -600,6 +736,10 @@ function Invoke-SumiGuardTestProcess {
         }
     }
     finally {
+        if ($processStarted -and $null -ne $collectSnapshot) {
+            try { . $collectSnapshot } catch { $enumerationOk = $false }
+        }
+        $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
         # The reap is guaranteed here, including on the paths that threw, and
         # runs before the tree kill so the children this run pinned are ended
         # by their own identity rather than incidentally.
@@ -646,6 +786,8 @@ function Invoke-SumiGuardTestProcess {
         descendants_identity_unconfirmed = $reap.identity_unconfirmed
         descendants_reaped = $reap.gone
         descendants_verified = ($reap.verified -and $enumerationOk)
+        descendants_unverified_reason_codes = $descendantUnverifiedReasonCodes.ToArray()
+        child_snapshot_diagnostics = $childSnapshotDiagnostics.ToArray()
         stdout_text = $stdout
         stderr_text = $stderr
     }
@@ -668,9 +810,20 @@ function Invoke-Hook {
     $null = New-Item -ItemType Directory -Path $caseRoot -Force
 
     $script:stage = $CaseName + '/store-setup'
+    $script:assessmentStoreSetupStatus = $null
     Import-Module (Join-Path $projectRoot 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1') -Force
     $created = New-SumiGuardAssessmentStore -StorePath $assessmentStorePath
-    if (-not $created.success) {
+    $createdProperties = if ($null -eq $created) { @() } else { @($created.PSObject.Properties.Name) }
+    $createdSucceeded = (($createdProperties -contains 'success') -and [bool]$created.success)
+    if (-not $createdSucceeded) {
+        if (($createdProperties -contains 'status') -and
+            $created.status -is [string] -and
+            -not [string]::IsNullOrWhiteSpace([string]$created.status)) {
+            $script:assessmentStoreSetupStatus = [string]$created.status
+        }
+        else {
+            $script:assessmentStoreSetupStatus = 'DIAGNOSTIC_UNAVAILABLE'
+        }
         throw [System.InvalidOperationException]::new('assessment store setup failed')
     }
 
@@ -690,30 +843,52 @@ function Invoke-Hook {
     if ($PSBoundParameters.ContainsKey('Origin')) { $arguments += @('-EvaluationOrigin', $Origin) }
     if ($TrustedRoute) { $arguments += '-TrustedWindowsPowerShellRoute' }
 
-    # The event is written to a file and redirected in by the shell rather than
-    # piped with the call operator. A pipeline gives no process handle, so the
-    # run would have no time limit and a hook that blocked would hold the suite
-    # open indefinitely.
+    # Keep a byte-for-byte input fixture for the case, then read that fixture
+    # back as bytes.  It is sent through the direct PowerShell process handle,
+    # never through a text writer, a pipeline, or cmd redirection.
     $inputPath = Join-Path $caseRoot 'stdin.bin'
     [System.IO.File]::WriteAllBytes($inputPath, (New-Object System.Text.UTF8Encoding($false, $true)).GetBytes($EventJson))
+    [byte[]]$inputBytes = [System.IO.File]::ReadAllBytes($inputPath)
 
     $childCommandLine = (($arguments | ForEach-Object {
         $value = [string]$_
         if ($value -match '[\s"]') { '"' + $value + '"' } else { $value }
     }) -join ' ')
-    # /s /c makes cmd strip exactly the outer quotes and take the rest as is.
-    $commandLine = '/s /c "' + '"' + $powerShell51 + '" ' + $childCommandLine +
-        ' < "' + $inputPath + '"' + '"'
-
     $script:stage = $CaseName + '/child-run'
+    $script:hookExecutionOrdinal++
+    $hookExecutionOrdinal = $script:hookExecutionOrdinal
     $run = Invoke-SumiGuardTestProcess `
-        -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
-        -Arguments $commandLine
+        -FileName $powerShell51 `
+        -Arguments $childCommandLine `
+        -SendStandardInput `
+        -StandardInputBytes $inputBytes
     $script:childStartCount++
     if ($run.timed_out) { $script:timedOutCount++ }
     if (-not $run.descendants_reaped) { $script:unreapedCount++ }
     if (-not ($run.descendants_verified -and $run.output_complete -and
-        $run.exit_observed -and $run.kill_completed)) { $script:unverifiedCount++ }
+        $run.exit_observed -and $run.kill_completed)) {
+        $reasonCodes = New-Object System.Collections.Generic.List[string]
+        if (-not $run.descendants_verified) {
+            $descendantReasons = @($run.descendants_unverified_reason_codes)
+            if ($descendantReasons.Count -eq 0) {
+                # Do not infer a lower-level cause when the helper has none.
+                $reasonCodes.Add('DESCENDANT_STATE_UNVERIFIED')
+            }
+            else {
+                foreach ($reasonCode in $descendantReasons) { $reasonCodes.Add([string]$reasonCode) }
+            }
+        }
+        if (-not $run.output_complete) { $reasonCodes.Add('OUTPUT_DRAIN_UNVERIFIED') }
+        if (-not $run.exit_observed) { $reasonCodes.Add('LAUNCHER_EXIT_UNVERIFIED') }
+        if (-not $run.kill_completed) { $reasonCodes.Add('TREE_TERMINATION_UNVERIFIED') }
+        $script:unverifiedCases.Add([pscustomobject][ordered]@{
+            case_id = $CaseName
+            execution_ordinal = $hookExecutionOrdinal
+            reason_codes = $reasonCodes.ToArray()
+            child_snapshot_diagnostics = @($run.child_snapshot_diagnostics)
+        })
+        $script:unverifiedCount++
+    }
     if ([int]$run.descendants_terminated -gt 0) { $script:orphanCount++ }
     $stdout = [string]$run.stdout_text
     $exitCode = $run.exit_code
@@ -870,7 +1045,8 @@ try {
         $openSelf = { param($id) [System.Diagnostics.Process]::GetProcessById($id) }
         $readSelf = { param($id) @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop)[0] }
 
-        # Happy path: the pid is pinned and handed back with its start time.
+        # CIM initial and recheck values establish this process identity. The
+        # retained native handle's start time is checked only against itself.
         $pinned = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
             -OpenProcess $openSelf -ReadCurrent $readSelf
         $pinnedOk = ($pinned.action -ceq 'record') -and ($null -ne $pinned.handle)
@@ -925,6 +1101,18 @@ try {
             ($recheckFailed.reason -ceq 'RECHECK_FAILED') -and
             ($null -eq $recheckFailed.handle)) -Observed @{
                 action = [string]$recheckFailed.action; reason = [string]$recheckFailed.reason }
+
+        # No native timestamp can bridge the CIM observation gap without a
+        # tolerance. An empty CIM recheck is therefore never a clean exit.
+        $emptyRecheck = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
+            -OpenProcess $openSelf `
+            -ReadCurrent { param($id) $null }
+        $script:stage = 'add/RECHECK_EMPTY_REMAINS_UNRELIABLE'
+        Add-Result 'RECHECK_EMPTY_REMAINS_UNRELIABLE' (
+            ($emptyRecheck.action -ceq 'unreliable') -and
+            ($emptyRecheck.reason -ceq 'RECHECK_EMPTY') -and
+            ($null -eq $emptyRecheck.handle)) -Observed @{
+                action = [string]$emptyRecheck.action; reason = [string]$emptyRecheck.reason }
     }
     catch {
         Add-Result 'CASE_EXCEPTION_REGISTRATION_CONTROLS' $false -Observed @{
@@ -1085,6 +1273,89 @@ try {
     }
     catch {
         Add-Result 'CASE_EXCEPTION_THROW_AFTER_OBSERVATION_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # A root that never reads its fixed input starts a child and then exits.
+    # The pending pipe write must keep collecting descendants; the child seen
+    # with a pinned handle must still reach the finally reap when EndWrite
+    # observes the broken pipe.
+    try {
+        $script:stage = 'assert/input-send-early-root-exit-control'
+        $escapedPowerShell = $powerShell51.Replace("'", "''")
+        $earlyExitText = '$null = Start-Process -FilePath ''' + $escapedPowerShell +
+            ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""''; Start-Sleep -Milliseconds 1000'
+        $earlyExitEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($earlyExitText))
+        [byte[]]$fixedInput = New-Object byte[] 1048576
+        $script:LastObservedChildIds = @()
+        $script:LastReapResult = $null
+        $script:LastReapFailed = $false
+        $sendCaught = $false
+        try {
+            $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+                -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $earlyExitEncoded) `
+                -TimeoutMilliseconds 5000 -ShutdownTimeoutMilliseconds 3000 `
+                -SendStandardInput -StandardInputBytes $fixedInput
+        }
+        catch {
+            $sendCaught = $true
+        }
+        $script:childStartCount++
+        $recordedIds = @($script:LastObservedChildIds)
+        $reapResult = $script:LastReapResult
+        $confirmation = Test-RecordedChildGone -ProcessId $recordedIds -ReadByProcessId {
+            param($id)
+            @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop |
+                Where-Object { [string]$_.Name -like 'powershell*' })
+        } -TimeoutMilliseconds 10000
+        $script:stage = 'add/PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD'
+        Add-Result 'PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD' (
+            $sendCaught -and $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
+            [int]$reapResult.terminated -ge 1 -and [bool]$reapResult.gone -and
+            [bool]$reapResult.verified -and (-not [bool]$script:LastReapFailed) -and
+            [bool]$confirmation.verified -and [bool]$confirmation.gone) -Observed @{
+                send_failed = $sendCaught; recorded_children = $recordedIds.Count
+                reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
+                confirmation_verified = [bool]$confirmation.verified
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_PENDING_INPUT_EARLY_ROOT_EXIT_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    # A snapshot provider that cannot answer is never folded into a clean
+    # descendant state, even when the root itself exits normally.
+    try {
+        $script:stage = 'assert/input-send-snapshot-unverified-control'
+        $unverifiedRun = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+            -Arguments '-NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 300"' `
+            -SendStandardInput -StandardInputBytes ([byte[]]@(0x00)) `
+            -SnapshotProvider {
+                param($parentId)
+                [pscustomobject]@{ ok = $false; items = @(); diagnostics = @(
+                    [pscustomobject]@{ reason_code = 'TEST_SNAPSHOT_UNVERIFIED'; stage = 'TEST_SNAPSHOT' }) }
+            }
+        $script:childStartCount++
+        $script:stage = 'add/INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN'
+        Add-Result 'INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN' (
+            [bool]$unverifiedRun.exit_observed -and [bool]$unverifiedRun.output_complete -and
+            (-not [bool]$unverifiedRun.descendants_enumerated) -and
+            (-not [bool]$unverifiedRun.descendants_verified) -and
+            [bool]$unverifiedRun.descendants_reaped) -Observed @{
+                exit_observed = [bool]$unverifiedRun.exit_observed
+                descendants_enumerated = [bool]$unverifiedRun.descendants_enumerated
+                descendants_verified = [bool]$unverifiedRun.descendants_verified
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_INPUT_SEND_SNAPSHOT_UNVERIFIED_CONTROL' $false -Observed @{
             exception_type = $_.Exception.GetType().FullName
             script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
             stage = [string]$script:stage
@@ -1493,6 +1764,7 @@ finally {
         child_processes_timed_out = $script:timedOutCount
         child_processes_left_running = $script:unreapedCount
         child_process_state_unverified = $script:unverifiedCount
+        child_process_unverified_cases = $script:unverifiedCases.ToArray()
         child_processes_terminated_after_launcher_exit = $script:orphanCount
         command_inputs_executed = $false
         body_store_written = $false
@@ -1504,5 +1776,3 @@ finally {
 
     if ($summary.success) { exit 0 } else { exit 1 }
 }
-
-

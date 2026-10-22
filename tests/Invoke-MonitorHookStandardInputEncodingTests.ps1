@@ -44,6 +44,7 @@ $script:unverifiedCount = 0
 # terminated after its launcher exited is an unexpected leftover, not
 # routine cleanup.
 $script:orphanCount = 0
+$script:assessmentStoreSetupStatus = $null
 $workRoot = Join-Path ([IO.Path]::GetTempPath()) ('sumi-guard-stdin-' + [Guid]::NewGuid().ToString('N'))
 
 # Built from code points so the bytes under test do not depend on this file's
@@ -61,6 +62,10 @@ function Add-Result {
 
     $row = [ordered]@{ name = $Name; pass = $Pass }
     if ($null -ne $Observed) { $row['observed'] = [pscustomobject]$Observed }
+    if (-not $Pass -and $script:stage -like '*/store-setup' -and
+        $null -ne $script:assessmentStoreSetupStatus) {
+        $row['assessment_store_setup_status'] = $script:assessmentStoreSetupStatus
+    }
     $results.Add([pscustomobject]$row)
 }
 
@@ -445,6 +450,11 @@ function Invoke-SumiGuardTestProcess {
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Arguments,
         [ValidateRange(1000, 120000)][int]$TimeoutMilliseconds = 60000,
         [ValidateRange(1000, 60000)][int]$ShutdownTimeoutMilliseconds = 15000,
+        # Only ordinary hook runs opt into stdin delivery.  The separate
+        # switch keeps an intentional empty byte[] distinct from control runs.
+        [switch]$SendStandardInput,
+        [AllowEmptyCollection()][byte[]]$StandardInputBytes,
+        [scriptblock]$SnapshotProvider,
         # Test seam for the finally path: fails the run at the one moment
         # where children exist but nothing has cleaned them up yet.
         [switch]$TestThrowAfterObservation
@@ -455,7 +465,7 @@ function Invoke-SumiGuardTestProcess {
     $startInfo.Arguments = $Arguments
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardInput = $false
+    $startInfo.RedirectStandardInput = [bool]$SendStandardInput
     $startInfo.RedirectStandardOutput = $true
     $startInfo.RedirectStandardError = $true
 
@@ -472,6 +482,8 @@ function Invoke-SumiGuardTestProcess {
     $stdout = ''
     $stderr = ''
     $exitCode = $null
+    $processStarted = $false
+    $collectSnapshot = $null
     $script:LastObservedChildIds = @()
     $script:LastReapResult = $null
     $script:LastReapFailed = $false
@@ -479,9 +491,64 @@ function Invoke-SumiGuardTestProcess {
         if (-not $process.Start()) {
             throw [System.InvalidOperationException]::new('test child process did not start')
         }
+        $processStarted = $true
         # Both reads start before any wait so a full pipe cannot block the child.
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        if ($null -eq $SnapshotProvider) {
+            $SnapshotProvider = { param($parentId) Get-ChildProcessSnapshot -ParentId $parentId }
+        }
+        $collectSnapshot = {
+            $snapshot = $null
+            try { $snapshot = & $SnapshotProvider $process.Id }
+            catch { $enumerationOk = $false }
+            if ($null -ne $snapshot -and -not $snapshot.ok) { $enumerationOk = $false }
+            if ($null -ne $snapshot) {
+                foreach ($item in @($snapshot.items)) {
+                    if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
+                }
+            }
+        }
+        . $collectSnapshot
+
+        if ($SendStandardInput) {
+            $standardInput = $null
+            $writeWaitHandle = $null
+            try {
+                $standardInput = $process.StandardInput
+                # Send the exact bytes from stdin.bin.  No StreamWriter text
+                # API is used, so neither decoding nor a preamble can occur.
+                $write = $standardInput.BaseStream.BeginWrite(
+                    $StandardInputBytes, 0, $StandardInputBytes.Length, $null, $null)
+                $writeWaitHandle = $write.AsyncWaitHandle
+                $writeDeadline = [DateTime]::UtcNow.AddMilliseconds($ShutdownTimeoutMilliseconds)
+                while (-not $writeWaitHandle.WaitOne(100)) {
+                    . $collectSnapshot
+                    if ([DateTime]::UtcNow -ge $writeDeadline) {
+                        throw [System.TimeoutException]::new('standard input write timed out')
+                    }
+                }
+                $standardInput.BaseStream.EndWrite($write)
+                $standardInput.BaseStream.Flush()
+            }
+            finally {
+                if ($null -ne $writeWaitHandle) {
+                    try { $writeWaitHandle.Dispose() } catch {
+                        Write-Verbose 'Standard input write wait handle was already released.'
+                    }
+                }
+                # Close the underlying pipe to deliver EOF after the exact
+                # bytes above; Close itself does not perform a text write.
+                if ($null -ne $standardInput) {
+                    try { $standardInput.Close() } catch {
+                        Write-Verbose 'Standard input pipe was already closed.'
+                    }
+                    try { $standardInput.Dispose() } catch {
+                        Write-Verbose 'Standard input writer was already released.'
+                    }
+                }
+            }
+        }
 
         # Children can only be enumerated while their parent is alive, so the
         # looks happen early and more than once. A launcher that exits first
@@ -489,11 +556,7 @@ function Invoke-SumiGuardTestProcess {
         # them afterwards possible at all.
         foreach ($waitMs in @(250, 750)) {
             if ($process.WaitForExit($waitMs)) { break }
-            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-            if (-not $snapshot.ok) { $enumerationOk = $false }
-            foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
-            }
+            . $collectSnapshot
         }
         $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
 
@@ -506,11 +569,7 @@ function Invoke-SumiGuardTestProcess {
         }
         else {
             $timedOut = $true
-            $snapshot = Get-ChildProcessSnapshot -ParentId $process.Id
-            if (-not $snapshot.ok) { $enumerationOk = $false }
-            foreach ($item in @($snapshot.items)) {
-                if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
-            }
+            . $collectSnapshot
             $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
             $killCompleted = Invoke-ProcessTreeTermination -ProcessId $process.Id `
                 -TimeoutMilliseconds $ShutdownTimeoutMilliseconds
@@ -536,6 +595,10 @@ function Invoke-SumiGuardTestProcess {
         }
     }
     finally {
+        if ($processStarted -and $null -ne $collectSnapshot) {
+            try { . $collectSnapshot } catch { $enumerationOk = $false }
+        }
+        $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
         # The reap is guaranteed here, including on the paths that threw, and
         # runs before the tree kill so the children this run pinned are ended
         # by their own identity rather than incidentally.
@@ -653,13 +716,30 @@ function Invoke-HookWithStandardInput {
     $null = New-Item -ItemType Directory -Path $caseRoot -Force
 
     $script:stage = $CaseName + '/store-setup'
+    $script:assessmentStoreSetupStatus = $null
     Import-Module (Join-Path $projectRoot 'src\SumiGuard.AssessmentStore\SumiGuard.AssessmentStore.psd1') -Force
     Import-Module (Join-Path $projectRoot 'src\SumiGuard.LocalStore\SumiGuard.LocalStore.psd1') -Force
     Import-Module (Join-Path $projectRoot 'src\SumiGuard.ExecutionAdapter\SumiGuard.ExecutionAdapter.psd1') -Force
     $assessmentInit = New-SumiGuardAssessmentStore -StorePath $assessmentStorePath
+    $assessmentProperties = if ($null -eq $assessmentInit) { @() } else { @($assessmentInit.PSObject.Properties.Name) }
+    $assessmentSucceeded = (($assessmentProperties -contains 'success') -and [bool]$assessmentInit.success)
+    if (-not $assessmentSucceeded) {
+        if (($assessmentProperties -contains 'status') -and
+            $assessmentInit.status -is [string] -and
+            -not [string]::IsNullOrWhiteSpace([string]$assessmentInit.status)) {
+            $script:assessmentStoreSetupStatus = [string]$assessmentInit.status
+        }
+        else {
+            $script:assessmentStoreSetupStatus = 'DIAGNOSTIC_UNAVAILABLE'
+        }
+    }
     $bodyInit = Initialize-SumiGuardLocalStore -Path $bodyStorePath
     $executionInit = Initialize-SumiGuardExecutionStore -Path $executionStorePath
-    if (-not ($assessmentInit.success -and $bodyInit.success -and $executionInit.success)) {
+    $bodyProperties = if ($null -eq $bodyInit) { @() } else { @($bodyInit.PSObject.Properties.Name) }
+    $executionProperties = if ($null -eq $executionInit) { @() } else { @($executionInit.PSObject.Properties.Name) }
+    $bodySucceeded = (($bodyProperties -contains 'success') -and [bool]$bodyInit.success)
+    $executionSucceeded = (($executionProperties -contains 'success') -and [bool]$executionInit.success)
+    if (-not ($assessmentSucceeded -and $bodySucceeded -and $executionSucceeded)) {
         throw [System.InvalidOperationException]::new('store setup failed')
     }
 
@@ -676,32 +756,24 @@ function Invoke-HookWithStandardInput {
         '-ResultPath', $resultPath,
         '-TrustedWindowsPowerShellRoute')
 
-    # Standard input comes from a file of exact bytes, redirected by the shell,
-    # rather than from Process.StandardInput.
-    #
-    # Touching Process.StandardInput creates a StreamWriter over the pipe whose
-    # encoding is Console.InputEncoding. When that encoding carries a preamble,
-    # which it does when the parent console is UTF-8, the writer emits a BOM
-    # ahead of anything written to its BaseStream. The harness would then
-    # prepend a BOM to every case: the no-BOM cases would silently become BOM
-    # cases, and a double BOM would reach the BOM cases. Redirecting from a
-    # file keeps the bytes the test wrote the bytes the hook reads, and no
-    # console encoding is altered anywhere to achieve it.
+    # Preserve an exact per-case fixture, then send the same byte[] through
+    # the direct PowerShell process handle.  The validated BaseStream path does
+    # not use StreamWriter text methods, pipelines, cmd redirection, decoding,
+    # or re-encoding.
     $inputPath = Join-Path $caseRoot 'stdin.bin'
     [System.IO.File]::WriteAllBytes($inputPath, $InputBytes)
+    [byte[]]$inputBytesFromFile = [System.IO.File]::ReadAllBytes($inputPath)
 
     $childCommandLine = (($arguments | ForEach-Object {
         $value = [string]$_
         if ($value -match '[\s"]') { '"' + $value + '"' } else { $value }
     }) -join ' ')
-    # /s /c makes cmd strip exactly the outer quotes and take the rest as is.
-    $commandLine = '/s /c "' + '"' + $powerShell51 + '" ' + $childCommandLine +
-        ' < "' + $inputPath + '"' + '"'
-
     $script:stage = $CaseName + '/child-run'
     $run = Invoke-SumiGuardTestProcess `
-        -FileName (Join-Path $env:SystemRoot 'System32\cmd.exe') `
-        -Arguments $commandLine
+        -FileName $powerShell51 `
+        -Arguments $childCommandLine `
+        -SendStandardInput `
+        -StandardInputBytes $inputBytesFromFile
     $script:childStartCount++
     if ($run.timed_out) { $script:timedOutCount++ }
     if (-not $run.descendants_reaped) { $script:unreapedCount++ }
@@ -1101,6 +1173,82 @@ try {
         }
     }
 
+    # Keep observing while a fixed input is pending. The root starts a sleeping
+    # child without reading stdin, then exits; the pinned child must be reaped
+    # even though the input write fails at the broken pipe.
+    try {
+        $script:stage = 'assert/input-send-early-root-exit-control'
+        $escapedPowerShell = $powerShell51.Replace("'", "''")
+        $earlyExitText = '$null = Start-Process -FilePath ''' + $escapedPowerShell +
+            ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""''; Start-Sleep -Milliseconds 1000'
+        $earlyExitEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($earlyExitText))
+        [byte[]]$fixedInput = New-Object byte[] 1048576
+        $script:LastObservedChildIds = @()
+        $script:LastReapResult = $null
+        $script:LastReapFailed = $false
+        $sendCaught = $false
+        try {
+            $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+                -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $earlyExitEncoded) `
+                -TimeoutMilliseconds 5000 -ShutdownTimeoutMilliseconds 3000 `
+                -SendStandardInput -StandardInputBytes $fixedInput
+        }
+        catch {
+            $sendCaught = $true
+        }
+        $script:childStartCount++
+        $recordedIds = @($script:LastObservedChildIds)
+        $reapResult = $script:LastReapResult
+        $confirmation = Test-RecordedChildGone -ProcessId $recordedIds -ReadByProcessId {
+            param($id)
+            @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop |
+                Where-Object { [string]$_.Name -like 'powershell*' })
+        } -TimeoutMilliseconds 10000
+        $script:stage = 'add/PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD'
+        Add-Result 'PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD' (
+            $sendCaught -and $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
+            [int]$reapResult.terminated -ge 1 -and [bool]$reapResult.gone -and
+            [bool]$reapResult.verified -and (-not [bool]$script:LastReapFailed) -and
+            [bool]$confirmation.verified -and [bool]$confirmation.gone) -Observed @{
+                send_failed = $sendCaught; recorded_children = $recordedIds.Count
+                reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
+                confirmation_verified = [bool]$confirmation.verified
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_PENDING_INPUT_EARLY_ROOT_EXIT_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
+    try {
+        $script:stage = 'assert/input-send-snapshot-unverified-control'
+        $unverifiedRun = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+            -Arguments '-NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 300"' `
+            -SendStandardInput -StandardInputBytes ([byte[]]@(0x00)) `
+            -SnapshotProvider { param($parentId) [pscustomobject]@{ ok = $false; items = @() } }
+        $script:childStartCount++
+        $script:stage = 'add/INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN'
+        Add-Result 'INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN' (
+            [bool]$unverifiedRun.exit_observed -and [bool]$unverifiedRun.output_complete -and
+            (-not [bool]$unverifiedRun.descendants_enumerated) -and
+            (-not [bool]$unverifiedRun.descendants_verified) -and
+            [bool]$unverifiedRun.descendants_reaped) -Observed @{
+                exit_observed = [bool]$unverifiedRun.exit_observed
+                descendants_enumerated = [bool]$unverifiedRun.descendants_enumerated
+                descendants_verified = [bool]$unverifiedRun.descendants_verified
+            }
+    }
+    catch {
+        Add-Result 'CASE_EXCEPTION_INPUT_SEND_SNAPSHOT_UNVERIFIED_CONTROL' $false -Observed @{
+            exception_type = $_.Exception.GetType().FullName
+            script_line_number = [int]$_.InvocationInfo.ScriptLineNumber
+            stage = [string]$script:stage
+        }
+    }
+
     # Control for the waiting machinery itself. Every other case here finishes
     # on its own, so none of them exercises the timeout, the tree kill or the
     # reap check, and all of those could be broken while the suite stayed
@@ -1438,5 +1586,3 @@ finally {
 
     if ($summary.success) { exit 0 } else { exit 1 }
 }
-
-
