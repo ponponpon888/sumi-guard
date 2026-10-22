@@ -593,7 +593,10 @@ function Invoke-SumiGuardTestProcess {
     $killCompleted = $true
     $exitObserved = $false
     $outputComplete = $false
-    $enumerationOk = $true
+    # This state crosses the snapshot scriptblock boundary and is consumed by
+    # the final descendant verdict. Keep it as an object reference so a
+    # collector failure cannot be lost to scriptblock scoping.
+    $snapshotState = [pscustomobject]@{ enumeration_ok = $true }
     $descendantUnverifiedReasonCodes = New-Object System.Collections.Generic.List[string]
     $childSnapshotDiagnostics = New-Object System.Collections.Generic.List[object]
     $observed = New-Object System.Collections.Generic.List[object]
@@ -622,7 +625,7 @@ function Invoke-SumiGuardTestProcess {
             $snapshot = $null
             try { $snapshot = & $SnapshotProvider $process.Id }
             catch {
-                $enumerationOk = $false
+                $snapshotState.enumeration_ok = $false
                 $childSnapshotDiagnostics.Add([pscustomobject][ordered]@{
                     reason_code = 'CHILD_SNAPSHOT_QUERY_FAILED'; stage = 'CHILD_SNAPSHOT_QUERY'
                     exception_type = $_.Exception.GetType().FullName; hresult = [int]$_.Exception.HResult
@@ -632,7 +635,7 @@ function Invoke-SumiGuardTestProcess {
                 }
             }
             if ($null -ne $snapshot -and -not $snapshot.ok) {
-                $enumerationOk = $false
+                $snapshotState.enumeration_ok = $false
                 foreach ($diagnostic in @($snapshot.diagnostics)) { $childSnapshotDiagnostics.Add($diagnostic) }
                 if (-not $descendantUnverifiedReasonCodes.Contains('CHILD_SNAPSHOT_UNVERIFIED')) {
                     $descendantUnverifiedReasonCodes.Add('CHILD_SNAPSHOT_UNVERIFIED')
@@ -737,7 +740,7 @@ function Invoke-SumiGuardTestProcess {
     }
     finally {
         if ($processStarted -and $null -ne $collectSnapshot) {
-            try { . $collectSnapshot } catch { $enumerationOk = $false }
+            try { . $collectSnapshot } catch { $snapshotState.enumeration_ok = $false }
         }
         $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
         # The reap is guaranteed here, including on the paths that threw, and
@@ -781,11 +784,11 @@ function Invoke-SumiGuardTestProcess {
         output_complete = $outputComplete
         kill_completed = $killCompleted
         observed_descendants = $observed.Count
-        descendants_enumerated = $enumerationOk
+        descendants_enumerated = $snapshotState.enumeration_ok
         descendants_terminated = $reap.terminated
         descendants_identity_unconfirmed = $reap.identity_unconfirmed
         descendants_reaped = $reap.gone
-        descendants_verified = ($reap.verified -and $enumerationOk)
+        descendants_verified = ($reap.verified -and $snapshotState.enumeration_ok)
         descendants_unverified_reason_codes = $descendantUnverifiedReasonCodes.ToArray()
         child_snapshot_diagnostics = $childSnapshotDiagnostics.ToArray()
         stdout_text = $stdout
@@ -1106,7 +1109,7 @@ try {
         # tolerance. An empty CIM recheck is therefore never a clean exit.
         $emptyRecheck = Get-ObservedChildRegistration -ChildId $PID -CreatedAtFirstRead $selfCreated `
             -OpenProcess $openSelf `
-            -ReadCurrent { param($id) $null }
+            -ReadCurrent { $null }
         $script:stage = 'add/RECHECK_EMPTY_REMAINS_UNRELIABLE'
         Add-Result 'RECHECK_EMPTY_REMAINS_UNRELIABLE' (
             ($emptyRecheck.action -ceq 'unreliable') -and
@@ -1338,7 +1341,6 @@ try {
             -Arguments '-NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 300"' `
             -SendStandardInput -StandardInputBytes ([byte[]]@(0x00)) `
             -SnapshotProvider {
-                param($parentId)
                 [pscustomobject]@{ ok = $false; items = @(); diagnostics = @(
                     [pscustomobject]@{ reason_code = 'TEST_SNAPSHOT_UNVERIFIED'; stage = 'TEST_SNAPSHOT' }) }
             }

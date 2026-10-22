@@ -28,7 +28,7 @@ function Get-ByteHash {
     }
 }
 
-function Read-AllStandardInputBytes {
+function Read-StandardInputByteStream {
     $inputStream = [Console]::OpenStandardInput()
     $buffer = New-Object byte[] 4096
     $bytes = New-Object System.Collections.Generic.List[byte]
@@ -55,7 +55,7 @@ if ($Child) {
             throw 'Child result and status paths are required.'
         }
 
-        $received = Read-AllStandardInputBytes
+        $received = Read-StandardInputByteStream
         $observation = [ordered]@{
             byte_count = $received.Length
             sha256 = Get-ByteHash -Bytes $received
@@ -86,6 +86,7 @@ if ($Child) {
             catch {
                 # A missing status file is reported by the parent.  Do not
                 # write an exception message to either redirected stream.
+                Write-Verbose 'CHILD_STATUS_WRITE_FAILED'
             }
         }
     }
@@ -136,7 +137,6 @@ try {
         $process = New-Object Diagnostics.Process
         $process.StartInfo = $startInfo
         $processStarted = $false
-        $timedOut = $false
         try {
             if (-not $process.Start()) { throw 'The probe child did not start.' }
             $processStarted = $true
@@ -162,7 +162,6 @@ try {
             }
 
             if (-not $process.WaitForExit($TimeoutMilliseconds)) {
-                $timedOut = $true
                 throw 'The probe child did not exit before the timeout.'
             }
             $process.WaitForExit()
@@ -176,12 +175,17 @@ try {
             }
             catch {
                 # Stream completion is represented below; no child text is emitted.
+                Write-Verbose 'CHILD_OUTPUT_READ_INCOMPLETE'
             }
             $statusFileExists = Test-Path -LiteralPath $statusFile -PathType Leaf
             $resultFileExists = Test-Path -LiteralPath $resultFile -PathType Leaf
             $childStatus = $null
             if ($statusFileExists) {
-                try { $childStatus = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json } catch { }
+                try { $childStatus = Get-Content -LiteralPath $statusFile -Raw | ConvertFrom-Json }
+                catch {
+                    $childStatus = $null
+                    Write-Verbose 'CHILD_STATUS_READ_FAILED'
+                }
             }
 
             $expectedHash = Get-ByteHash -Bytes $payload

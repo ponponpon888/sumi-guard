@@ -475,7 +475,10 @@ function Invoke-SumiGuardTestProcess {
     $killCompleted = $true
     $exitObserved = $false
     $outputComplete = $false
-    $enumerationOk = $true
+    # This state crosses the snapshot scriptblock boundary and is consumed by
+    # the final descendant verdict. Keep it as an object reference so a
+    # collector failure cannot be lost to scriptblock scoping.
+    $snapshotState = [pscustomobject]@{ enumeration_ok = $true }
     $observed = New-Object System.Collections.Generic.List[object]
     $seenIds = New-Object System.Collections.Generic.HashSet[int]
     $reap = $null
@@ -501,8 +504,8 @@ function Invoke-SumiGuardTestProcess {
         $collectSnapshot = {
             $snapshot = $null
             try { $snapshot = & $SnapshotProvider $process.Id }
-            catch { $enumerationOk = $false }
-            if ($null -ne $snapshot -and -not $snapshot.ok) { $enumerationOk = $false }
+            catch { $snapshotState.enumeration_ok = $false }
+            if ($null -ne $snapshot -and -not $snapshot.ok) { $snapshotState.enumeration_ok = $false }
             if ($null -ne $snapshot) {
                 foreach ($item in @($snapshot.items)) {
                     if ($seenIds.Add([int]$item.id)) { $observed.Add($item) } else { $item.handle.Dispose() }
@@ -596,7 +599,7 @@ function Invoke-SumiGuardTestProcess {
     }
     finally {
         if ($processStarted -and $null -ne $collectSnapshot) {
-            try { . $collectSnapshot } catch { $enumerationOk = $false }
+            try { . $collectSnapshot } catch { $snapshotState.enumeration_ok = $false }
         }
         $script:LastObservedChildIds = @($observed | ForEach-Object { [int]$_.id })
         # The reap is guaranteed here, including on the paths that threw, and
@@ -640,11 +643,11 @@ function Invoke-SumiGuardTestProcess {
         output_complete = $outputComplete
         kill_completed = $killCompleted
         observed_descendants = $observed.Count
-        descendants_enumerated = $enumerationOk
+        descendants_enumerated = $snapshotState.enumeration_ok
         descendants_terminated = $reap.terminated
         descendants_identity_unconfirmed = $reap.identity_unconfirmed
         descendants_reaped = $reap.gone
-        descendants_verified = ($reap.verified -and $enumerationOk)
+        descendants_verified = ($reap.verified -and $snapshotState.enumeration_ok)
         stdout_text = $stdout
         stderr_text = $stderr
     }
@@ -1228,7 +1231,7 @@ try {
         $unverifiedRun = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
             -Arguments '-NoProfile -NonInteractive -Command "Start-Sleep -Milliseconds 300"' `
             -SendStandardInput -StandardInputBytes ([byte[]]@(0x00)) `
-            -SnapshotProvider { param($parentId) [pscustomobject]@{ ok = $false; items = @() } }
+            -SnapshotProvider { [pscustomobject]@{ ok = $false; items = @() } }
         $script:childStartCount++
         $script:stage = 'add/INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN'
         Add-Result 'INPUT_SEND_SNAPSHOT_UNVERIFIED_IS_NOT_CLEAN' (
