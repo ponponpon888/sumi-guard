@@ -515,6 +515,7 @@ try {
     Assert-Test ($normal.execution_id -ceq $normalExecutionId) 'Execution ID changed during save.'
     Assert-Test ($normal.event_storage_status -ceq 'SAVED') 'Event was not saved.'
     Assert-Test ($normal.body_storage_status -ceq 'SAVED') 'Body was not saved.'
+    Assert-Test ($null -eq $normal.body_failure_reason_code) 'A saved body reported a failure reason code.'
     $normalList = Get-SumiGuardExecutionRecord `
         -ExecutionStorePath $executionStore `
         -LocalStorePath $bodyStore `
@@ -557,6 +558,8 @@ try {
     Assert-Test (-not $capacity.success) 'Capacity overflow unexpectedly succeeded.'
     Assert-Test ($capacity.status -ceq 'EVENT_SAVED_BODY_COLLECTION_FAILED') `
         'Capacity-overflow adapter status is incorrect.'
+    Assert-Test ($capacity.body_failure_reason_code -ceq 'ITEM_LIMIT_EXCEEDED') `
+        'Capacity overflow did not report the body failure reason code.'
     Assert-Test ($capacity.content_status -ceq 'HASH_ONLY') 'Capacity overflow did not retain hash-only state.'
     Assert-Test ($capacity.collection_status -ceq 'COLLECTION_FAILED') `
         'Capacity overflow did not record collection failure.'

@@ -13,7 +13,8 @@ function Get-TestAdapterResult {
         [Parameter(Mandatory = $true)][string]$Status,
         [bool]$Success = $false,
         [string]$EventState = 'FAILED',
-        [string]$BodyState = 'FAILED'
+        [string]$BodyState = 'FAILED',
+        [AllowNull()]$BodyFailureReason = $null
     )
 
     return [pscustomobject]@{
@@ -21,6 +22,7 @@ function Get-TestAdapterResult {
         success = $Success
         event_storage_status = $EventState
         body_storage_status = $BodyState
+        body_failure_reason_code = $BodyFailureReason
         command_text = 'SECRET_TEST_ONLY_NEVER_OUTPUT'
         assessment_status = 'DETECTED'
     }
@@ -41,6 +43,12 @@ $cases = @(
     [pscustomobject]@{ name = 'full_recording_allows_even_with_detection'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $complete; action = 'ALLOW'; reason = 'RECORDING_CONFIRMED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'metadata_only_not_a_full_receipt'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $metadataOnly; action = 'DENY'; reason = 'BODY_NOT_CAPTURED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'body_store_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $partial; action = 'DENY'; reason = 'BODY_STORE_FAILED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'lock_timeout_denied_with_own_reason'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED' -BodyFailureReason 'STORE_LOCK_TIMEOUT'); action = 'DENY'; reason = 'LOCK_TIMEOUT'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'item_limit_denied_as_capacity'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED' -BodyFailureReason 'ITEM_LIMIT_EXCEEDED'); action = 'DENY'; reason = 'STORE_CAPACITY_REACHED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'total_limit_denied_as_capacity'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED' -BodyFailureReason 'TOTAL_LIMIT_EXCEEDED'); action = 'DENY'; reason = 'STORE_CAPACITY_REACHED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'other_body_reason_stays_generic'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED' -BodyFailureReason 'ENCRYPTION_FAILED'); action = 'DENY'; reason = 'BODY_STORE_FAILED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'lowercase_body_reason_stays_generic'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_SAVED_BODY_COLLECTION_FAILED' -EventState 'SAVED' -BodyFailureReason 'store_lock_timeout'); action = 'DENY'; reason = 'BODY_STORE_FAILED'; effective = 'ENFORCE_RECORDING' },
+    [pscustomobject]@{ name = 'body_reason_ignored_when_recording_confirmed'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = (Get-TestAdapterResult -Status 'EVENT_AND_BODY_SAVED' -Success $true -EventState 'SAVED' -BodyState 'SAVED' -BodyFailureReason 'STORE_LOCK_TIMEOUT'); action = 'ALLOW'; reason = 'RECORDING_CONFIRMED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'execution_store_validation_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $failed; action = 'DENY'; reason = 'STORE_VALIDATION_FAILED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'body_hash_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $hashFailed; action = 'DENY'; reason = 'BODY_HASH_FAILED'; effective = 'ENFORCE_RECORDING' },
     [pscustomobject]@{ name = 'event_save_failure_denied'; mode = 'ENFORCE_RECORDING'; route = $true; input = 'VALID'; adapter = $eventFailed; action = 'DENY'; reason = 'EVENT_SAVE_FAILED'; effective = 'ENFORCE_RECORDING' },
