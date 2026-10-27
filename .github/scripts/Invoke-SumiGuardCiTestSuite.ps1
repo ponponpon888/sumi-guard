@@ -59,6 +59,10 @@ $excludedTests = @(
     [pscustomobject][ordered]@{
         name = 'Invoke-ReadOnlyCliTests.ps1'
         reason = 'Imports SumiGuard.LocalStore. Same DPAPI CurrentUser dependency as above.'
+    },
+    [pscustomobject][ordered]@{
+        name = 'Invoke-LocalStoreOperatorHardeningTests.ps1'
+        reason = 'Gate 3 operator check: inspects the DPAPI CurrentUser blob and master key of the user running it. Run on the operator machine through tools/Invoke-SumiGuardGate3OperatorCheck.ps1.'
     }
 )
 
