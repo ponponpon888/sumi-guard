@@ -321,7 +321,7 @@ function Get-SumiGuardEnforcementSetting {
             return ConvertTo-SumiGuardSettingResult -Status 'CONFIG_INVALID'
         }
 
-        if ($null -eq $config -or $config -isnot [pscustomobject]) {
+        if ($null -eq $config -or $config -isnot [System.Management.Automation.PSCustomObject]) {
             return ConvertTo-SumiGuardSettingResult -Status 'CONFIG_INVALID'
         }
         $keys = @($config.PSObject.Properties.Name)

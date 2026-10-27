@@ -77,7 +77,9 @@ function Invoke-HookCase {
 
 function Initialize-CaseControl {
     param(
-        [AllowNull()][string]$ConfigText = '{"schema_version":1,"mode":"ENFORCE_RECORDING","routes":["claude-code:PreToolUse:Bash"]}',
+        [string]$ConfigText = '{"schema_version":1,"mode":"ENFORCE_RECORDING","routes":["claude-code:PreToolUse:Bash"]}',
+        # A [string] parameter cannot carry $null, so "no setting" is a switch.
+        [switch]$NoConfig,
         [switch]$KillSwitch
     )
 
@@ -87,7 +89,7 @@ function Initialize-CaseControl {
     $control = Join-Path $caseRoot 'control'
     $created = Initialize-SumiGuardEnforcementControlDirectory -Path $control
     Assert-Test ($created.status -ceq 'CREATED') 'A control directory could not be created.'
-    if ($null -ne $ConfigText) {
+    if (-not $NoConfig) {
         [System.IO.File]::WriteAllText((Join-Path $control 'enforcement.json'), $ConfigText, $utf8)
     }
     if ($KillSwitch) {
@@ -193,7 +195,7 @@ try {
     Import-Module $controlManifest -Force -ErrorAction Stop
 
     Invoke-HookCase -Name 'absent_setting_steps_aside' -Body {
-        $case = Initialize-CaseControl -ConfigText $null
+        $case = Initialize-CaseControl -NoConfig
         $run = Invoke-EnforcementHook -Case $case -EventJson (Get-EventJson) -Outcome 'TEST_LOCK_TIMEOUT'
         Assert-StepsAside -Run $run -HookStatus 'NOT_ENFORCED'
         Assert-Test ($run.detail.setting_status -ceq 'CONFIG_ABSENT') 'The absent setting was not reported.'
@@ -228,12 +230,14 @@ try {
         $statuses = New-Object System.Collections.Generic.List[string]
         # An empty string is left out on purpose: the hook would then read
         # standard input, which belongs to the test runner here.
-        foreach ($eventText in @('not json', '[]', '{"tool_name":"Bash tool"}', '{"tool_name":7}', '{}')) {
-            $run = Invoke-EnforcementHook -Case $case -EventJson $eventText -Outcome 'TEST_LOCK_TIMEOUT'
-            Assert-Test ($run.output.Count -eq 0) 'An unroutable event produced output.'
-            Assert-Test ($run.detail.hook_status -ceq 'NO_ROUTE' -or $run.detail.hook_status -ceq 'NOT_ENFORCED') `
-                'An unroutable event was enforced.'
-            Assert-Test ($run.notices.Count -eq 0) 'An unroutable event wrote a notice.'
+        $events = @('not json', '[]', '{"tool_name":"Bash tool"}', '{"tool_name":7}', '{}')
+        for ($index = 0; $index -lt $events.Count; $index++) {
+            $run = Invoke-EnforcementHook -Case $case -EventJson $events[$index] -Outcome 'TEST_LOCK_TIMEOUT'
+            # Index and fixed status only, so a failure names its event.
+            $label = 'event ' + $index + ' status ' + [string]$run.detail.hook_status + ': '
+            Assert-Test ($run.output.Count -eq 0) ($label + 'an unroutable event produced output.')
+            Assert-Test ($run.detail.hook_status -ceq 'NO_ROUTE') ($label + 'an unroutable event was not NO_ROUTE.')
+            Assert-Test ($run.notices.Count -eq 0) ($label + 'an unroutable event wrote a notice.')
             $statuses.Add([string]$run.detail.hook_status)
         }
         @{ statuses = $statuses.ToArray() }

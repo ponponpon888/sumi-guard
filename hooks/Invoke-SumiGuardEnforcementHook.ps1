@@ -113,7 +113,7 @@ function Get-SumiGuardEnforcementExecutionId {
 function Get-SumiGuardEnforcementToolName {
     param([AllowNull()]$HookInput)
 
-    if ($null -eq $HookInput -or $HookInput -isnot [pscustomobject]) { return $null }
+    if ($null -eq $HookInput -or $HookInput -isnot [System.Management.Automation.PSCustomObject]) { return $null }
     $names = @($HookInput.PSObject.Properties.Name)
     if ($names -cnotcontains 'tool_name' -or $HookInput.tool_name -isnot [string]) { return $null }
     if ($HookInput.tool_name -cnotmatch $script:ToolNamePattern) { return $null }
@@ -125,7 +125,7 @@ function Get-SumiGuardEnforcementToolName {
 function Test-SumiGuardEnforcementInput {
     param([AllowNull()]$HookInput)
 
-    if ($null -eq $HookInput -or $HookInput -isnot [pscustomobject]) { return $false }
+    if ($null -eq $HookInput -or $HookInput -isnot [System.Management.Automation.PSCustomObject]) { return $false }
     $names = @($HookInput.PSObject.Properties.Name)
     foreach ($name in @('hook_event_name', 'session_id', 'tool_use_id', 'tool_input')) {
         if ($names -cnotcontains $name) { return $false }
@@ -135,7 +135,7 @@ function Test-SumiGuardEnforcementInput {
         if ($HookInput.$name -isnot [string] -or [string]::IsNullOrWhiteSpace($HookInput.$name)) { return $false }
     }
     $toolInput = $HookInput.tool_input
-    if ($null -eq $toolInput -or $toolInput -isnot [pscustomobject]) { return $false }
+    if ($null -eq $toolInput -or $toolInput -isnot [System.Management.Automation.PSCustomObject]) { return $false }
     return (@($toolInput.PSObject.Properties.Name) -ccontains 'command' -and $toolInput.command -is [string])
 }
 
