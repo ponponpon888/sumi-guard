@@ -1,6 +1,8 @@
 # Gate 4, part 2: opt-in enforcement hook (2026-10-28)
 
-## Status: hook and synthetic tests only, not registered anywhere
+## Status: measured on the operator machine, gate 4 closed; still not registered anywhere
+
+See [measurements/2026-10-28-gate4-operator-check.md](../measurements/2026-10-28-gate4-operator-check.md).
 
 `hooks/Invoke-SumiGuardEnforcementHook.ps1` wires the part 1 pieces
 ([docs/36](36-gate4-enforcement-control.md)) into one Claude Code
@@ -49,7 +51,7 @@ error, deny unchanged when the notice file is full, kill switch effective on
 the next call and reversible, no command text in any output, and stable
 execution ids separate from the MONITOR hook's.
 
-## Not shown yet (the operator measurement that closes gate 4)
+## Operator measurement
 
 - Real standard input from Claude Code, the real adapter with DPAPI, and the
   host honouring this hook's deny.
