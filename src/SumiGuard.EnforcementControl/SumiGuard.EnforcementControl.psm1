@@ -61,7 +61,8 @@ function ConvertTo-SumiGuardSettingResult {
 function ConvertTo-SumiGuardNoticeResult {
     param(
         [Parameter(Mandatory = $true)][bool]$Persisted,
-        [AllowNull()][string]$FailureCode
+        # Untyped: a [string] parameter would turn $null into an empty string.
+        [AllowNull()]$FailureCode
     )
 
     $status = if ($Persisted) { 'NOTICE_PERSISTED' } else { 'NOTICE_NOT_PERSISTED' }
