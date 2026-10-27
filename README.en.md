@@ -6,7 +6,7 @@
 
 **A local-first audit prototype for Claude Code and Codex pre-tool events on Windows.**
 
-[日本語](README.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
+[日本語](README.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
 
 SUMI Guard records host-supplied pre-execution input, assessment output, and independent OS process observations as separate evidence types. Its MONITOR hook never denies execution. Metadata-only recording is the default, so command bodies are not stored unless explicitly enabled.
 
