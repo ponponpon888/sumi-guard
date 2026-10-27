@@ -84,6 +84,7 @@ $cases = @(
     [pscustomobject]@{ name = 'unlisted_route_no_hook_decision'; value = $allowUnlisted; shouldDeny = $false },
     [pscustomobject]@{ name = 'invalid_input_no_hook_decision'; value = $allowBadInput; shouldDeny = $false },
     [pscustomobject]@{ name = 'null_decision_no_hook_decision'; value = $null; shouldDeny = $false },
+    [pscustomobject]@{ name = 'empty_object_no_hook_decision'; value = ([pscustomobject]@{}); shouldDeny = $false },
     [pscustomobject]@{ name = 'string_input_no_hook_decision'; value = 'DENY'; shouldDeny = $false },
     [pscustomobject]@{ name = 'wrong_requested_mode_rejected'; value = $wrongMode; shouldDeny = $false },
     [pscustomobject]@{ name = 'unknown_reason_rejected'; value = $wrongReason; shouldDeny = $false },

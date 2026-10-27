@@ -15,7 +15,7 @@ function ConvertTo-SumiGuardClaudePreToolUseResponse {
         return
     }
 
-    $names = @($RecordingDecision.PSObject.Properties.Name)
+    $names = @($RecordingDecision.PSObject.Properties | ForEach-Object { $_.Name })
     $required = @(
         'schema_version',
         'requested_mode',
