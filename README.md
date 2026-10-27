@@ -6,7 +6,7 @@
 
 **Claude Code / Codex が送ったツール実行前イベントを、Windows 上でローカル監査するオープンソース試作です。**
 
-[English](README.en.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
+[English](README.en.md) · [Changelog](CHANGELOG.md) · [Security](SECURITY.md) · [Threat model](THREAT_MODEL.md) · [Claude Code compatibility](docs/28-claude-code-hook-compatibility.md)
 
 SUMI Guard は、AI 開発ツールから渡された実行前入力、ルール評価、独立した OS プロセス観測を
 別々の証拠として記録します。MONITOR フックは実行を遮断せず、コマンド本文を保存しない
