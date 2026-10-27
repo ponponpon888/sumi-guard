@@ -52,6 +52,21 @@ Claude Code の限定接続試験は 2026-10-20 に実施しました。フッ�
 `intent_storage=EVENT_SAVED_METADATA_ONLY` で、MONITOR として実行を継続しました。
 詳しい条件と証拠は [docs/28](docs/28-claude-code-hook-compatibility.md) を参照してください。
 
+## 強制モードへの安全ゲート
+
+既定の MONITOR は、記録するだけで実行を止めません。「記録できない操作は実行させない」
+強制モード（`ENFORCE_RECORDING`、設計は [docs/26](docs/26-enforce-recording-design.md)）は、
+次の4つのゲートを順に通すまで、どこからも有効にしません。各ゲートは測定記録を残して閉じます。
+
+| ゲート | 確かめること | 状態 | 記録 |
+|---|---|---|---|
+| 1. 判定と応答 | 記録の成否から deny / allow を決める判定と、Claude Code へ返す deny 応答の形（合成試験） | 完了（CI） | [docs/33](docs/33-recording-enforcement-decision-stage.md), [docs/34](docs/34-claude-pretooluse-response-prototype.md) |
+| 2. ホストが deny に従うか | 本物の Claude Code が SUMI Guard の deny で実行を止め、無関係な操作は止めないか（使い捨てセッション、無害な固定入力） | 完了（Claude Code 2.1.309、2026-10-23）。Codex は未測定 | [測定記録](measurements/2026-10-23-claude-pretooluse-deny-gate2.md) |
+| 3. 暗号化と権限 | 運用者の Windows で、DPAPI CurrentUser、ACL、保存失敗時の継続、記録の出どころ（使い捨て保存先） | 完了（31/31 項目、2026-10-27） | [測定記録](measurements/2026-10-27-gate3-operator-check.md) |
+| 4. 運用の安全装置 | 運用者だけが置ける設定、緊急停止スイッチ、待ち時間の上限、通知。その後、1経路だけで有効化して測定 | 進行中（パート1の部品は完了、合成試験） | [docs/33](docs/33-recording-enforcement-decision-stage.md), [docs/36](docs/36-gate4-enforcement-control.md) |
+
+ゲート4が閉じるまで、`hooks/Invoke-SumiGuardMonitorHook.ps1` は常に MONITOR のままです。
+
 ## 3分デモ
 
 Windows PowerShell 5.1 で、固定の無害な入力だけを使う隔離デモです。
