@@ -158,6 +158,7 @@ function Get-SumiGuardFailedCaseDigest {
     $failedRows = @(@($Summary.$rowsProperty) | Where-Object {
         $null -ne $_ -and (
             (($_.PSObject.Properties.Name -contains 'pass') -and (-not [bool]$_.pass)) -or
+            (($_.PSObject.Properties.Name -contains 'passed') -and (-not [bool]$_.passed)) -or
             (($_.PSObject.Properties.Name -contains 'result') -and ([string]$_.result -cne 'PASS'))
         )
     })
@@ -265,6 +266,19 @@ try {
 
 foreach ($failure in $failures) {
     Write-Host $failure
+}
+
+# The same lines as workflow annotations. Annotations can be read through the
+# checks API, so a failing case can be named without downloading the job log.
+if ($env:GITHUB_ACTIONS -eq 'true') {
+    foreach ($failure in $failures) {
+        $annotation = $failure
+        if ($annotation.Length -gt 3000) {
+            $annotation = $annotation.Substring(0, 3000) + '...'
+        }
+        $annotation = $annotation.Replace('%', '%25').Replace("`r", '%0D').Replace("`n", '%0A')
+        Write-Host ('::error title=SUMI Guard test failure::' + $annotation)
+    }
 }
 
 $summaryObject = [pscustomobject][ordered]@{
