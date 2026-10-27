@@ -48,6 +48,7 @@ function Get-SumiGuardRecordingDecision {
                     $success = $false
                     $eventState = ''
                     $bodyState = ''
+                    $bodyFailureReason = ''
 
                     if ($names -ccontains 'status' -and $AdapterResult.status -is [string]) {
                         $status = $AdapterResult.status
@@ -60,6 +61,9 @@ function Get-SumiGuardRecordingDecision {
                     }
                     if ($names -ccontains 'body_storage_status' -and $AdapterResult.body_storage_status -is [string]) {
                         $bodyState = $AdapterResult.body_storage_status
+                    }
+                    if ($names -ccontains 'body_failure_reason_code' -and $AdapterResult.body_failure_reason_code -is [string]) {
+                        $bodyFailureReason = $AdapterResult.body_failure_reason_code
                     }
 
                     switch -CaseSensitive ($status) {
@@ -80,7 +84,15 @@ function Get-SumiGuardRecordingDecision {
                             break
                         }
                         'EVENT_SAVED_BODY_COLLECTION_FAILED' {
-                            $reason = 'BODY_STORE_FAILED'
+                            # Narrow the reason only from LocalStore's fixed codes,
+                            # so the operator notice can say what to do. Anything
+                            # else stays the generic body-store failure.
+                            switch -CaseSensitive ($bodyFailureReason) {
+                                'STORE_LOCK_TIMEOUT' { $reason = 'LOCK_TIMEOUT'; break }
+                                'ITEM_LIMIT_EXCEEDED' { $reason = 'STORE_CAPACITY_REACHED'; break }
+                                'TOTAL_LIMIT_EXCEEDED' { $reason = 'STORE_CAPACITY_REACHED'; break }
+                                default { $reason = 'BODY_STORE_FAILED' }
+                            }
                             break
                         }
                         'EVENT_SAVED_METADATA_ONLY' {

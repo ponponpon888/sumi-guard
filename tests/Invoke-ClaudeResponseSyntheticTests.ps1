@@ -36,6 +36,13 @@ $metadataOnly = [pscustomobject]@{
     body_storage_status = 'OMITTED_BY_POLICY'
 }
 
+$lockFailed = $bodyFailed | Select-Object *
+$lockFailed | Add-Member -MemberType NoteProperty -Name body_failure_reason_code -Value 'STORE_LOCK_TIMEOUT'
+$capacityFailed = $bodyFailed | Select-Object *
+$capacityFailed | Add-Member -MemberType NoteProperty -Name body_failure_reason_code -Value 'TOTAL_LIMIT_EXCEEDED'
+$denyByLock = Get-SumiGuardRecordingDecision -RequestedMode ENFORCE_RECORDING -RouteAllowlisted $true -AdapterResult $lockFailed
+$denyByCapacity = Get-SumiGuardRecordingDecision -RequestedMode ENFORCE_RECORDING -RouteAllowlisted $true -AdapterResult $capacityFailed
+
 $denyByStore = Get-SumiGuardRecordingDecision -RequestedMode ENFORCE_RECORDING -RouteAllowlisted $true -AdapterResult $noRecord
 $denyByBody = Get-SumiGuardRecordingDecision -RequestedMode ENFORCE_RECORDING -RouteAllowlisted $true -AdapterResult $bodyFailed
 $denyMetadata = Get-SumiGuardRecordingDecision -RequestedMode ENFORCE_RECORDING -RouteAllowlisted $true -AdapterResult $metadataOnly
@@ -67,6 +74,8 @@ $missingField = [pscustomobject]@{
 $cases = @(
     [pscustomobject]@{ name = 'denies_store_failure'; value = $denyByStore; shouldDeny = $true },
     [pscustomobject]@{ name = 'denies_body_failure'; value = $denyByBody; shouldDeny = $true },
+    [pscustomobject]@{ name = 'denies_lock_timeout'; value = $denyByLock; shouldDeny = $true },
+    [pscustomobject]@{ name = 'denies_capacity_reached'; value = $denyByCapacity; shouldDeny = $true },
     [pscustomobject]@{ name = 'denies_metadata_only'; value = $denyMetadata; shouldDeny = $true },
     [pscustomobject]@{ name = 'denies_missing_record'; value = $denyNoEvidence; shouldDeny = $true },
     [pscustomobject]@{ name = 'never_echoes_extra_source_fields'; value = $decisionWithExtra; shouldDeny = $true },

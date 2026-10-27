@@ -57,6 +57,8 @@ function ConvertTo-SumiGuardClaudePreToolUseResponse {
         'STORE_VALIDATION_FAILED',
         'BODY_HASH_FAILED',
         'BODY_STORE_FAILED',
+        'LOCK_TIMEOUT',
+        'STORE_CAPACITY_REACHED',
         'BODY_NOT_CAPTURED',
         'EVENT_SAVE_FAILED'
     )

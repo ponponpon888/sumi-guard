@@ -431,6 +431,10 @@ function Save-SumiGuardExecutionIntent {
         [string]$ExecutionId = '',
         [ValidateRange(1, 2147483647)][int]$MaxItemBytes = 1MB,
         [long]$MaxTotalBytes = 250MB,
+        # How long the body save waits for the LocalStore lock before giving
+        # up with STORE_LOCK_TIMEOUT. This is the bounded retry: the store
+        # polls the lock every 25 ms until this budget is spent.
+        [ValidateRange(100, 10000)][int]$BodyLockTimeoutMilliseconds = 10000,
         # Privacy-first intent capture: hash metadata without storing raw command text.
         # Opt in to encrypted body storage only where explicitly required.
         [switch]$MetadataOnly
@@ -474,7 +478,8 @@ function Save-SumiGuardExecutionIntent {
             -StorePath $LocalStorePath `
             -Body $Body `
             -MaxItemBytes $MaxItemBytes `
-            -MaxTotalBytes $MaxTotalBytes
+            -MaxTotalBytes $MaxTotalBytes `
+            -LockTimeoutMilliseconds $BodyLockTimeoutMilliseconds
         $bodySaved = [bool]$bodyResult.success
     }
     $bodyRef = if ($bodySaved) { [string]$bodyResult.body_id } else { $null }
@@ -541,6 +546,7 @@ function Save-SumiGuardExecutionIntent {
             execution_id = $ExecutionId
             body_storage_status = $bodyStorageStatus
             event_storage_status = 'FAILED'
+            body_failure_reason_code = $failureReason
             failure_notice_status = $failureNoticeStatus
             collection_status = 'COLLECTION_FAILED'
             content_status = $contentStatus
@@ -583,6 +589,7 @@ function Save-SumiGuardExecutionIntent {
         execution_id = $ExecutionId
         event_storage_status = 'SAVED'
         body_storage_status = $bodyStorageStatus
+        body_failure_reason_code = $failureReason
         failure_notice_status = $noticeStatus
         collection_status = $collectionStatus
         content_status = $contentStatus
