@@ -55,7 +55,7 @@ four gates are passed in order, each closed by a measurement record.
 | 1. Decision and response | Deny/allow from recording results, and the deny response sent to Claude Code (synthetic tests) | Done (CI) | [docs/33](docs/33-recording-enforcement-decision-stage.md), [docs/34](docs/34-claude-pretooluse-response-prototype.md) |
 | 2. Host honours deny | A real Claude Code stops on the SUMI Guard deny and lets an unrelated call through (disposable session, fixed benign input) | Done for Claude Code 2.1.309, 2026-10-23. Codex not measured | [Measurement](measurements/2026-10-23-claude-pretooluse-deny-gate2.md) |
 | 3. Encryption and permissions | DPAPI CurrentUser, ACLs, storage failures and event provenance on the operator's Windows machine (disposable stores) | Done, 31/31 cases, 2026-10-27 | [Measurement](measurements/2026-10-27-gate3-operator-check.md) |
-| 4. Operational safety | Operator-only setting, kill switch, bounded lock wait, notices; then one route enabled and measured | In progress | [docs/33](docs/33-recording-enforcement-decision-stage.md) |
+| 4. Operational safety | Operator-only setting, kill switch, bounded lock wait, notices; then one route enabled and measured | In progress (part 1 components done, synthetic tests) | [docs/33](docs/33-recording-enforcement-decision-stage.md), [docs/36](docs/36-gate4-enforcement-control.md) |
 
 Until gate 4 closes, `hooks/Invoke-SumiGuardMonitorHook.ps1` stays MONITOR-only.
 
