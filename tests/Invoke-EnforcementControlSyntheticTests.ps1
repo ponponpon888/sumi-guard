@@ -306,6 +306,7 @@ try {
         [pscustomobject]@{ name = 'malformed_json'; text = '{"schema_version":1,' },
         [pscustomobject]@{ name = 'empty_file'; text = '' },
         [pscustomobject]@{ name = 'top_level_array'; text = '[1]' },
+        [pscustomobject]@{ name = 'empty_object'; text = '{}' },
         [pscustomobject]@{ name = 'unknown_key'; text = '{"schema_version":1,"mode":"ENFORCE_RECORDING","routes":["claude-code:PreToolUse:Bash"],"note":"x"}' },
         [pscustomobject]@{ name = 'key_case_differs'; text = '{"schema_version":1,"Mode":"ENFORCE_RECORDING","routes":["claude-code:PreToolUse:Bash"]}' },
         [pscustomobject]@{ name = 'missing_routes'; text = '{"schema_version":1,"mode":"ENFORCE_RECORDING"}' },

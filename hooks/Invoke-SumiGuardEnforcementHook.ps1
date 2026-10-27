@@ -110,11 +110,14 @@ function Get-SumiGuardEnforcementExecutionId {
 }
 
 # Returns the tool name when the event names one we can route, else $null.
+# Property names are listed through the pipeline, not with .Name on the
+# collection: under strict mode 2.0 in Windows PowerShell 5.1 that member
+# access throws on an object with no properties, such as the event {}.
 function Get-SumiGuardEnforcementToolName {
     param([AllowNull()]$HookInput)
 
     if ($null -eq $HookInput -or $HookInput -isnot [System.Management.Automation.PSCustomObject]) { return $null }
-    $names = @($HookInput.PSObject.Properties.Name)
+    $names = @($HookInput.PSObject.Properties | ForEach-Object { $_.Name })
     if ($names -cnotcontains 'tool_name' -or $HookInput.tool_name -isnot [string]) { return $null }
     if ($HookInput.tool_name -cnotmatch $script:ToolNamePattern) { return $null }
     return [string]$HookInput.tool_name
@@ -126,7 +129,7 @@ function Test-SumiGuardEnforcementInput {
     param([AllowNull()]$HookInput)
 
     if ($null -eq $HookInput -or $HookInput -isnot [System.Management.Automation.PSCustomObject]) { return $false }
-    $names = @($HookInput.PSObject.Properties.Name)
+    $names = @($HookInput.PSObject.Properties | ForEach-Object { $_.Name })
     foreach ($name in @('hook_event_name', 'session_id', 'tool_use_id', 'tool_input')) {
         if ($names -cnotcontains $name) { return $false }
     }
@@ -136,7 +139,7 @@ function Test-SumiGuardEnforcementInput {
     }
     $toolInput = $HookInput.tool_input
     if ($null -eq $toolInput -or $toolInput -isnot [System.Management.Automation.PSCustomObject]) { return $false }
-    return (@($toolInput.PSObject.Properties.Name) -ccontains 'command' -and $toolInput.command -is [string])
+    return (@($toolInput.PSObject.Properties | ForEach-Object { $_.Name }) -ccontains 'command' -and $toolInput.command -is [string])
 }
 
 function Get-SumiGuardTestAdapterResult {
@@ -265,7 +268,7 @@ try {
                 }
                 if ($null -ne $adapterResult) {
                     $result.intent_status = [string]$adapterResult.status
-                    if (@($adapterResult.PSObject.Properties.Name) -ccontains 'body_failure_reason_code') {
+                    if (@($adapterResult.PSObject.Properties | ForEach-Object { $_.Name }) -ccontains 'body_failure_reason_code') {
                         $result.body_failure_reason_code = $adapterResult.body_failure_reason_code
                     }
                 }

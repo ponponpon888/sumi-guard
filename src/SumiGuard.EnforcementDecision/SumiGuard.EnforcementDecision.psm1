@@ -43,7 +43,7 @@ function Get-SumiGuardRecordingDecision {
                 $reason = 'RECORDING_NOT_VERIFIED'
 
                 if ($null -ne $AdapterResult) {
-                    $names = @($AdapterResult.PSObject.Properties.Name)
+                    $names = @($AdapterResult.PSObject.Properties | ForEach-Object { $_.Name })
                     $status = ''
                     $success = $false
                     $eventState = ''
