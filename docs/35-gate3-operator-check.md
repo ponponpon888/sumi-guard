@@ -1,15 +1,18 @@
 # Gate 3: operator-machine DPAPI and ACL check (2026-10-27)
 
-## Status: check prepared, not yet measured
+## Status: measured on the operator machine, all cases passed
+
+See [measurements/2026-10-27-gate3-operator-check.md](../measurements/2026-10-27-gate3-operator-check.md).
 
 Gate 3 of [docs/33](33-recording-enforcement-decision-stage.md) asks for
 DPAPI CurrentUser, ACLs, body-storage failures and full event provenance to be
 verified on the operator's Windows machine, using disposable stores. The
 GitHub-hosted CI deliberately excludes every DPAPI-dependent test, because a
 runner's user profile says nothing about the operator's. The newest measurement
-records for those tests are from 2026-10-03; the LocalStore module changed on
-10/08 and the execution adapter and its tests on 10/20, with no operator-machine
-record since.
+records for those tests were from 2026-10-03. The LocalStore module and its test
+are byte-identical to what was measured then (same SHA-256; 10/08 is only the
+repository's initial commit), but the execution adapter and the adapter and
+read-only CLI tests changed on 10/20 with no operator-machine record since.
 
 This change adds one runner and one new test script. Nothing is installed,
 registered or enabled. MONITOR and the operational hook are unchanged.
