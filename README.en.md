@@ -59,6 +59,23 @@ four gates are passed in order, each closed by a measurement record.
 
 All four gates are closed. Enforcement is still not registered in any permanent setting: enabling it for daily use is a separate operator decision, and `ENFORCEMENT_OFF` turns it back off. `hooks/Invoke-SumiGuardMonitorHook.ps1` stays MONITOR-only.
 
+### See enforcement in three minutes
+
+Without calling Claude, the demo feeds Claude Code shaped events to the real
+enforcement hook and shows six scenes: no setting, recorded and allowed,
+denied when the body store is broken, an unlisted tool left alone, the kill
+switch, and the kill switch removed. No API cost.
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\demo\Start-SumiGuardEnforcementDemo.ps1
+```
+
+It uses a disposable folder under `%TEMP%` only and touches no Claude Code
+setting or existing hook. The on-screen text is Japanese. Whether a host
+honours the deny is backed by the gate 2 and gate 4 records, not by this demo.
+See [demo/README.md](demo/README.md) (Japanese).
+
 ## Three-minute isolated demo
 
 ```powershell

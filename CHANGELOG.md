@@ -3,6 +3,20 @@
 All notable changes to SUMI Guard. Dates are JST. Each release links the
 measurement records that back its claims; a claim without a record is not made.
 
+## Unreleased
+
+### Added
+
+- **Enforcement demo** `demo/Start-SumiGuardEnforcementDemo.ps1`: six scenes
+  (off, recorded, denied, unlisted tool, kill switch, kill switch removed)
+  against the real enforcement hook, fed through standard input without
+  calling Claude. Disposable `%TEMP%` folder only; optional asciicast output
+  for the README GIF. Host behaviour on deny is backed by the gate 2 and 4
+  records, not by the demo.
+- **CI**: `tests/Invoke-EnforcementDemoSyntheticTests.ps1` runs the demo with
+  the hook's test seam in place of the DPAPI store and checks every scene,
+  the cast file, cleanup, and that no path or user name is printed.
+
 ## [0.2.0-preview] - 2026-10-28
 
 Opt-in `ENFORCE_RECORDING` ("do not run what cannot be recorded") for one

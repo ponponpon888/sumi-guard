@@ -67,6 +67,21 @@ Claude Code の限定接続試験は 2026-10-20 に実施しました。フッ�
 
 4つのゲートはすべて閉じました。それでも強制モードは、どの恒久設定にも登録していません。普段使いで有効にするかは運用者が別に決めることで、戻すときは `ENFORCEMENT_OFF` を置くだけです。`hooks/Invoke-SumiGuardMonitorHook.ps1` は常に MONITOR のままです。
 
+### 強制モードを3分で見る
+
+Claude を呼ばずに、本物の強制フックへ Claude Code と同じ形の入力を渡し、「設定なし → 記録して通す →
+保存先を壊すと止める → 対象外の道具は素通り → 緊急停止 → 戻す」の6場面を見せます。費用はかかりません。
+
+```powershell
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
+  -File .\demo\Start-SumiGuardEnforcementDemo.ps1
+```
+
+<!-- enforcement demo GIF: docs/assets/sumi-guard-enforcement-demo.gif (after the first operator run) -->
+
+使い捨てフォルダだけを使い、設定ファイルや既存のフックには触れません。詳しくは
+[demo/README.md](demo/README.md) の「強制モードの3分デモ」を参照してください。
+
 ## 3分デモ
 
 Windows PowerShell 5.1 で、固定の無害な入力だけを使う隔離デモです。
@@ -125,6 +140,8 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `kit/sumi-guard-prototype/`: 検証済みPowerShell 5.1スクリプトと使用方法
 - `kit/sumi-guard-protected-hook-test/`: 実フックと暗号化保存を結ぶ一回限りの接続試験
 - `demo/`: 固定入力を開始・確認・清掃する手動デモ
+- `demo/Start-SumiGuardEnforcementDemo.ps1`: Claude を呼ばずに強制フックの6場面を見せるデモ
+- `tests/Invoke-EnforcementDemoSyntheticTests.ps1`: 強制モードのデモを合成モードで走らせる CI 試験
 - `src/SumiGuard.LocalStore/`: 独立したDPAPI CurrentUserローカル保存モジュール
 - `src/SumiGuard.ExecutionAdapter/`: 実行前イベントと暗号化本文を `execution_id` で結ぶ接続モジュール
 - `tests/Invoke-LocalStoreTests.ps1`: ローカル保存モジュールの単体試験

@@ -142,8 +142,22 @@ function Invoke-ClaudeRun {
     $ErrorActionPreference = 'Continue'
     Push-Location -LiteralPath $WorkDirectory
     try {
-        $output = & claude -p $prompt --settings $settingsPath --model $Model --max-turns 4 `
-            --allowedTools Bash --output-format stream-json --verbose 2>&1
+        $claudeArguments = @(
+            '-p'
+            $prompt
+            '--settings'
+            $settingsPath
+            '--model'
+            $Model
+            '--max-turns'
+            '4'
+            '--allowedTools'
+            'Bash'
+            '--output-format'
+            'stream-json'
+            '--verbose'
+        )
+        $output = & claude @claudeArguments 2>&1
         $exitCode = $LASTEXITCODE
     }
     finally {
