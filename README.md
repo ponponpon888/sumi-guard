@@ -77,7 +77,10 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
   -File .\demo\Start-SumiGuardEnforcementDemo.ps1
 ```
 
-<!-- enforcement demo GIF: docs/assets/sumi-guard-enforcement-demo.gif (after the first operator run) -->
+![SUMI Guard 強制モード：実録を編集した6場面のデモ](docs/assets/sumi-guard-enforcement-demo.gif)
+
+録画を場面ごとに編集した約42秒のGIFです（日本語）。JSONは一部を抜粋しています。
+[静止画で確認](docs/assets/sumi-guard-enforcement-demo.png)。実ホストによる実行停止の検証映像ではありません。
 
 使い捨てフォルダだけを使い、設定ファイルや既存のフックには触れません。詳しくは
 [demo/README.md](demo/README.md) の「強制モードの3分デモ」を参照してください。
