@@ -76,6 +76,11 @@ setting or existing hook. The on-screen text is Japanese. Whether a host
 honours the deny is backed by the gate 2 and gate 4 records, not by this demo.
 See [demo/README.md](demo/README.md) (Japanese).
 
+![SUMI Guard enforcement demo: six scenes edited from a recorded run](docs/assets/sumi-guard-enforcement-demo.gif)
+
+A 42-second edited recording in Japanese; JSON is excerpted for readability.
+[View a still image](docs/assets/sumi-guard-enforcement-demo.png). This is a hook demonstration, not footage of a host blocking execution.
+
 ## Three-minute isolated demo
 
 ```powershell
