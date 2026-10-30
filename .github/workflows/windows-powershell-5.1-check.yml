@@ -66,4 +66,4 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Verify one fixed harmless child, separately from synthetic suite
         shell: powershell
-        run: .\\tests\\Invoke-ManagedProcessEvidenceRealSmokeTests.ps1 -RunSmoke
+        run: .\tests\Invoke-ManagedProcessEvidenceRealSmokeTests.ps1 -RunSmoke
