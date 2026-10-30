@@ -78,6 +78,33 @@ function Invoke-SumiGuardSyntheticAssessment {
         -InterpreterVerified $InterpreterVerified
 }
 
+function Get-SumiGuardFileSha256 {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath
+    )
+
+    $stream = $null
+    $sha256 = $null
+    try {
+        $stream = [System.IO.File]::Open(
+            $LiteralPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read)
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        $hashBytes = $sha256.ComputeHash($stream)
+        return ([System.BitConverter]::ToString($hashBytes)).Replace('-', '')
+    }
+    finally {
+        if ($null -ne $sha256) {
+            $sha256.Dispose()
+        }
+        if ($null -ne $stream) {
+            $stream.Dispose()
+        }
+    }
+}
+
 function Get-SumiGuardDisplayOutput {
     param(
         [Parameter(Mandatory = $true)][string]$StorePath,
@@ -157,6 +184,15 @@ try {
         -Assessment $detected `
         -EvaluationOrigin 'SYNTHETIC_TEST'
     Assert-SumiGuardAssessmentStoreTest ($aclSave.success) 'ACL_STORE_BASELINE_SAVE'
+
+    # Keep product initialization and baseline save unassisted; the direct ACL
+    # assertions below need Security commands in this test's local scope.
+    $securityManifest = Join-Path $PSHOME (
+        'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1')
+    if (-not (Test-Path -LiteralPath $securityManifest -PathType Leaf)) {
+        throw [IO.FileNotFoundException]::new()
+    }
+    Import-Module -Name $securityManifest -Scope Local -ErrorAction Stop
 
     $secretMarker = 'SYNTHETIC_SECRET_56a07f'
     $urlMarker = 'https://example.invalid/private?token=SYNTHETIC_TOKEN_84'
@@ -418,7 +454,7 @@ try {
             -CommandText "Write-Output 'atomic failure sample'" `
             -ExecutionId '00000000000000000000000000000017'
         $recordPath = Join-Path $mainStore 'assessments.ndjson'
-        $beforeHash = (Get-FileHash -LiteralPath $recordPath -Algorithm SHA256).Hash
+        $beforeHash = Get-SumiGuardFileSha256 -LiteralPath $recordPath
         # Resolved here, not at startup. The display CLI re-imports the store
         # module with -Force, which replaces the instance, and a test seam set on
         # the replaced instance would silently have no effect: the forced failure
@@ -439,7 +475,7 @@ try {
                 'SumiGuardAssessmentStoreTestForceAtomicWriteFailure',
                 $false)
         }
-        $afterHash = (Get-FileHash -LiteralPath $recordPath -Algorithm SHA256).Hash
+        $afterHash = Get-SumiGuardFileSha256 -LiteralPath $recordPath
         $pending = @(Get-ChildItem -LiteralPath $mainStore -Filter '.pending-assessment-*.tmp' -File)
         Assert-SumiGuardAssessmentStoreTest (-not $save.success) 'ATOMIC_FAILURE_SUCCESS_FALSE'
         Assert-SumiGuardAssessmentStoreTest `

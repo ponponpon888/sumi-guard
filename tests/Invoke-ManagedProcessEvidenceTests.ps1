@@ -1,0 +1,112 @@
+[CmdletBinding()]
+param()
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+$root = Split-Path -Parent $PSScriptRoot
+. (Join-Path $root 'demo\Invoke-SumiGuardManagedProcessEvidenceDemo.ps1')
+
+$id = '0123456789abcdef0123456789abcdef'
+$other = 'fedcba9876543210fedcba9876543210'
+$path = 'C:\Synthetic\WindowsPowerShell\powershell.exe'
+$results = New-Object Collections.ArrayList
+$executed = New-Object Collections.ArrayList
+$planned = @(
+    'NORMAL_CONFIRMS_TEST_DOUBLE_EVIDENCE','PATH_MISMATCH_IS_NOT_CONFIRMED','ID_MISMATCH_IS_NOT_CONFIRMED',
+    'MISSING_OBSERVATION_IS_NOT_CONFIRMED','OBSERVATION_EXCEPTION_IS_NOT_CONFIRMED','EARLY_EXIT_IS_NOT_CONFIRMED',
+    'START_FAILURE_IS_NOT_CONFIRMED','TIMEOUT_IS_NOT_CONFIRMED','SWITCH_OFF_DOES_NOT_START',
+    'DEFAULT_CONFIGURATION_AND_VERIFICATION_CONFIRM','PREFLIGHT_MISMATCH_BLOCKS_START','PLAN_ARGUMENTS_MATCH_ADAPTER_INPUT',
+    'ARGUMENT_MISMATCH_HAS_ZERO_STARTS_AND_NO_ADAPTER','BODY_MISMATCH_HAS_ZERO_STARTS_AND_NO_ADAPTER',
+    'START_EXCEPTION_IS_COMPRESSED','FAKE_PROCESS_START_FALSE_EXERCISES_ADAPTER_AND_DISPOSES',
+    'FAKE_NORMAL_PROPAGATES_OBSERVATIONS','FAKE_NONZERO_PROPAGATES','FAKE_EXIT_CODE_EXCEPTION_IS_NOT_CHILD_SUCCESS','FAKE_EXIT_CODE_NULL_IS_NOT_CHILD_SUCCESS','FAKE_TIMEOUT_PROPAGATES',
+    'FAKE_OUTPUT_MISMATCH_PROPAGATES','FAKE_ID_MISMATCH_IS_DIRECT','FAKE_MISSING_OBSERVATION_REMAINS_NULL',
+    'COUNTERS_DISTINGUISH_OBSERVER_FROM_PROCESS_START','KILL_EXCEPTION_IS_NOT_EXIT_EVIDENCE',
+    'KILL_WITHOUT_EXIT_CONFIRMATION_IS_FAILURE','INCOMPLETE_OUTPUT_IS_FAILURE','FAULTED_OUTPUT_IS_FAILURE',
+    'DISPOSE_IS_NOT_EXIT_EVIDENCE','CONFIRMATION_AND_CHILD_SUCCESS_DIFFER'
+)
+
+function Add-Result { param([string]$Name,[bool]$Pass,[string]$Detail=''); [void]$results.Add([pscustomobject]@{name=$Name;pass=$Pass;detail=$Detail}) }
+function Invoke-Case {
+    param([string]$Name,[scriptblock]$Body)
+    [void]$executed.Add($Name)
+    try { Add-Result -Name $Name -Pass ([bool](& $Body)) }
+    catch { Add-Result -Name $Name -Pass $false -Detail $_.Exception.GetType().FullName }
+}
+function Cfg {
+    param([string]$Launch="Write-Output 'PROCESS_EVIDENCE_OK'")
+    [pscustomobject]@{assessment_command_text="Write-Output 'PROCESS_EVIDENCE_OK'";launch_command_text=$Launch;executable_path=$path;expected_interpreter_version='5.1.1.1'}
+}
+function Ver { [pscustomobject]@{verified=$true;executable_is_standard_path=$true;runner_process_is_standard_path=$true;launch_configuration_verified=$true;evidence_source='MANAGED_RUNNER_PROCESS_AND_LAUNCH_CONFIGURATION';interpreter_version='5.1.1.1';executable_file_version='5.1.1.1';observed_executable_path=$path} }
+function FakeTask {
+    param($Value,[string]$Mode='complete')
+    $source = New-Object System.Threading.Tasks.TaskCompletionSource[string]
+    if ($Mode -eq 'complete') { [void]$source.SetResult([string]$Value) }
+    elseif ($Mode -eq 'fault') { [void]$source.SetException([InvalidOperationException]::new()) }
+    return $source.Task
+}
+function New-FakeStream {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification='Creates only an in-memory test stream and does not change external state or start a process.')]
+    param($Value,[string]$Mode='complete')
+    $stream=[pscustomobject]@{task=(FakeTask $Value $Mode)}
+    $stream | Add-Member ScriptMethod ReadToEndAsync { return $this.task }
+    return $stream
+}
+function New-FakeProcess {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification='Creates only an in-memory test process and does not change external state or start a process.')]
+    param([bool]$StartResult=$true,[bool]$InitialExit=$true,[bool]$KillThrows=$false,[bool]$ExitAfterKill=$true,[string]$OutputMode='complete',[AllowNull()]$ExitCode=0,[bool]$ExitCodeThrows=$false,[bool]$WithObservation=$true,[string]$Output=("SUMI_GUARD_PROCESS_EVIDENCE:$id`r`n"))
+    $main=if($WithObservation){[pscustomobject]@{FileName=$path}}else{$null}
+    $p=[pscustomobject]@{StartInfo=$null;StandardOutput=(New-FakeStream $Output $OutputMode);StandardError=(New-FakeStream '' $OutputMode);Id=42;StartTime=[datetime]::UtcNow;MainModule=$main;ExitCodeValue=$ExitCode;ExitCodeThrows=$ExitCodeThrows;ExitCodeGetterCalls=0;HasExited=$InitialExit;DisposeCalled=$false;StartResult=$StartResult;InitialExit=$InitialExit;KillThrows=$KillThrows;ExitAfterKill=$ExitAfterKill}
+    $p | Add-Member ScriptProperty ExitCode {$this.ExitCodeGetterCalls++;if($this.ExitCodeThrows){throw [InvalidOperationException]::new()};return $this.ExitCodeValue}
+    $p | Add-Member ScriptMethod Start { return $this.StartResult }
+    $p | Add-Member ScriptMethod WaitForExit { param($milliseconds) # Preserves the timed WaitForExit interface; fake state intentionally controls the result.
+        [void]$milliseconds;if($this.InitialExit){return $true};return $this.HasExited }
+    $p | Add-Member ScriptMethod Kill { if($this.KillThrows){throw 'kill failed'};$this.HasExited=$this.ExitAfterKill }
+    $p | Add-Member ScriptMethod Dispose { $this.DisposeCalled=$true }
+    return $p
+}
+
+$c=Cfg;$v=Ver
+Invoke-Case 'NORMAL_CONFIRMS_TEST_DOUBLE_EVIDENCE' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i)[pscustomobject]@{process_started=$true;execution_id=$i;observed_executable_path=$path}}; $r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.execution_start_count -eq 1 }
+Invoke-Case 'PATH_MISMATCH_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i)[pscustomobject]@{process_started=$true;execution_id=$i;observed_executable_path='C:\Other.exe'}}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'ID_MISMATCH_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i) # Preserves the callback interface; this negative case intentionally ignores the supplied correlation ID.
+ [void]$i;[pscustomobject]@{process_started=$true;execution_id=$other;observed_executable_path=$path}}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'MISSING_OBSERVATION_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i) # Preserves the callback interface; this negative case intentionally ignores the supplied correlation ID.
+ [void]$i;$null}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'OBSERVATION_EXCEPTION_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {throw [InvalidOperationException]::new()}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'EARLY_EXIT_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i)[pscustomobject]@{process_started=$false;execution_id=$i;observed_executable_path=$path}}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'START_FAILURE_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i) # Preserves the callback interface; this negative case intentionally ignores the supplied correlation ID.
+ [void]$i;$null}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'TIMEOUT_IS_NOT_CONFIRMED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i) # Preserves the callback interface; this negative case intentionally ignores the supplied correlation ID.
+ [void]$i;$null}; $r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'SWITCH_OFF_DOES_NOT_START' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v; $r.execution_start_count -eq 0 -and $r.observer_invocation_count -eq 0 }
+Invoke-Case 'DEFAULT_CONFIGURATION_AND_VERIFICATION_CONFIRM' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -RunProcess -ProcessObserver {param($i)[pscustomobject]@{process_started=$true;execution_id=$i;observed_executable_path=(Get-SumiGuardManagedPowerShellDemoConfiguration).executable_path}}; $r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.observer_invocation_count -eq 1 }
+Invoke-Case 'PREFLIGHT_MISMATCH_BLOCKS_START' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride (Cfg -Launch "Write-Output 'OTHER'") -VerificationOverride $v -RunProcess -ProcessObserver {throw 'must not start'}; $r.reconciliation_status -ceq 'UNVERIFIED_LAUNCH_PLAN' -and $r.observer_invocation_count -eq 0 }
+Invoke-Case 'PLAN_ARGUMENTS_MATCH_ADAPTER_INPUT' { $p=New-SumiGuardManagedProcessEvidencePlan $id; $p.arguments_verified -and $p.body_verified -and $p.start_info.Arguments -ceq $p.arguments }
+foreach($planCase in @(@{n='ARGUMENT_MISMATCH_HAS_ZERO_STARTS_AND_NO_ADAPTER';a=$false;b=$true},@{n='BODY_MISMATCH_HAS_ZERO_STARTS_AND_NO_ADAPTER';a=$true;b=$false})){
+    Invoke-Case $planCase.n { $called=[pscustomobject]@{value=$false};$p=New-SumiGuardManagedProcessEvidencePlan $id;$bad=[pscustomobject]@{arguments_verified=$planCase.a;body_verified=$planCase.b;configuration=$c;start_info=$p.start_info;arguments=$p.arguments};$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -PlanOverride $bad -ProcessAdapterOverride {$called.value=$true};$r.process_start_attempt_count -eq 0 -and $r.process_start_success_count -eq 0 -and $r.observer_invocation_count -eq 0 -and -not $called.value }
+}
+Invoke-Case 'START_EXCEPTION_IS_COMPRESSED' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessAdapterOverride {throw [InvalidOperationException]::new()}; $r.observer_invocation_count -eq 1 -and $r.process_start_attempt_count -eq 0 -and $r.process_start_success_count -eq 0 -and $r.adapter_stage -ceq 'OBSERVER_INVOCATION' -and $null -ne $r.adapter_exception_type -and $null -ne $r.adapter_exception_hresult -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' }
+Invoke-Case 'FAKE_PROCESS_START_FALSE_EXERCISES_ADAPTER_AND_DISPOSES' { $p=New-FakeProcess -StartResult $false;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.process_start_attempt_count -eq 1 -and $r.process_start_success_count -eq 0 -and $r.adapter_stage -ceq 'PROCESS_START_ATTEMPT' -and $null -eq $r.adapter_exception_type -and $r.process_confirmation_status -cne 'PROCESS_CONFIRMED' -and $p.DisposeCalled }
+Invoke-Case 'FAKE_NORMAL_PROPAGATES_OBSERVATIONS' { $p=New-FakeProcess;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.child_exit_code -eq 0 -and -not $r.timed_out -and $r.stdout_matches_expected -and $r.pid_obtained -and $r.start_time_obtained -and $r.executable_path_obtained -and $r.correlation_id_matches -and $r.child_execution_succeeded -eq $true -and $r.child_execution_status -ceq 'SUCCEEDED' }
+Invoke-Case 'FAKE_NONZERO_PROPAGATES' { $p=New-FakeProcess -ExitCode 7;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.child_exit_code -eq 7 -and $r.child_execution_status -ceq 'NONZERO_EXIT' -and $r.child_execution_succeeded -eq $false }
+# Verifies that a throwing ScriptProperty whose retrieval yields null is not child-execution success; it does not prove arrival at the product OBSERVE_EXIT_CODE catch.
+Invoke-Case 'FAKE_EXIT_CODE_EXCEPTION_IS_NOT_CHILD_SUCCESS' { $p=New-FakeProcess -ExitCodeThrows $true;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.correlation_id_matches -eq $true -and $r.correlation_returned -eq $true -and $r.process_exit_confirmed -eq $true -and $r.stdout_capture_completed -eq $true -and $r.stderr_capture_completed -eq $true -and $r.stdout_matches_expected -eq $true -and $null -eq $r.child_exit_code -and $r.child_execution_succeeded -eq $false -and $r.child_execution_status -ceq 'EXIT_CODE_UNAVAILABLE' -and $r.child_execution_reason_code -ceq 'EXIT_CODE_UNAVAILABLE' -and $r.adapter_stage -ceq 'COMPLETED' -and $null -eq $r.adapter_exception_type -and $null -eq $r.adapter_exception_hresult -and $p.ExitCodeThrows -eq $true -and $p.ExitCodeGetterCalls -eq 1 }
+Invoke-Case 'FAKE_EXIT_CODE_NULL_IS_NOT_CHILD_SUCCESS' { $p=New-FakeProcess -ExitCode $null;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.correlation_id_matches -eq $true -and $r.correlation_returned -eq $true -and $r.process_exit_confirmed -eq $true -and $r.stdout_capture_completed -eq $true -and $r.stderr_capture_completed -eq $true -and $r.stdout_matches_expected -eq $true -and $null -eq $r.child_exit_code -and $r.child_execution_succeeded -eq $false -and $r.child_execution_status -ceq 'EXIT_CODE_UNAVAILABLE' -and $r.child_execution_reason_code -ceq 'EXIT_CODE_UNAVAILABLE' -and $r.adapter_stage -ceq 'COMPLETED' }
+Invoke-Case 'FAKE_TIMEOUT_PROPAGATES' { $p=New-FakeProcess -InitialExit $false -ExitAfterKill $true;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.timed_out -and $null -eq $r.child_exit_code -and $r.termination_status -ceq 'KILL_CONFIRMED' -and $r.child_execution_status -ceq 'TIMED_OUT' }
+Invoke-Case 'FAKE_OUTPUT_MISMATCH_PROPAGATES' { $p=New-FakeProcess -Output 'wrong';$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.stdout_matches_expected -eq $false -and $r.child_execution_status -ceq 'OUTPUT_MISMATCH' -and $r.child_execution_succeeded -eq $false }
+Invoke-Case 'FAKE_ID_MISMATCH_IS_DIRECT' { $p=New-FakeProcess -Output ("SUMI_GUARD_PROCESS_EVIDENCE:$other`r`n");$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $r.correlation_id_matches -eq $false -and $r.correlation_returned -eq $false }
+Invoke-Case 'FAKE_MISSING_OBSERVATION_REMAINS_NULL' { $p=New-FakeProcess -WithObservation $false;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.observer_invocation_count -eq 1 -and $null -eq $r.executable_path_obtained }
+Invoke-Case 'COUNTERS_DISTINGUISH_OBSERVER_FROM_PROCESS_START' { $r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -ProcessObserver {param($i)[pscustomobject]@{process_started=$true;execution_id=$i;observed_executable_path=$path}};$r.observer_invocation_count -eq 1 -and $r.process_start_attempt_count -eq 0 -and $r.process_start_success_count -eq 0 -and $r.execution_start_count_meaning -ceq 'OBSERVER_INVOCATIONS_REPORTED_BY_EXISTING_CONNECTION' }
+Invoke-Case 'KILL_EXCEPTION_IS_NOT_EXIT_EVIDENCE' { $p=New-FakeProcess -InitialExit $false -KillThrows $true -ExitAfterKill $false;$e=Invoke-SumiGuardManagedRealProcessEvidenceAdapter -Plan (New-SumiGuardManagedProcessEvidencePlan $id) -CorrelationId $id -ProcessFactoryOverride {return $p};-not $e.process_exit_confirmed -and $e.kill_succeeded -eq $false -and $e.child_execution_succeeded -eq $false }
+Invoke-Case 'KILL_WITHOUT_EXIT_CONFIRMATION_IS_FAILURE' { $p=New-FakeProcess -InitialExit $false -ExitAfterKill $false;$e=Invoke-SumiGuardManagedRealProcessEvidenceAdapter -Plan (New-SumiGuardManagedProcessEvidencePlan $id) -CorrelationId $id -ProcessFactoryOverride {return $p};$e.termination_status -ceq 'EXIT_NOT_CONFIRMED' -and -not $e.process_exit_confirmed -and $e.child_execution_succeeded -eq $false }
+Invoke-Case 'INCOMPLETE_OUTPUT_IS_FAILURE' { $p=New-FakeProcess -OutputMode 'incomplete';$e=Invoke-SumiGuardManagedRealProcessEvidenceAdapter -Plan (New-SumiGuardManagedProcessEvidencePlan $id) -CorrelationId $id -ProcessFactoryOverride {return $p};-not $e.stdout_capture_completed -and $e.child_execution_status -ceq 'OUTPUT_CAPTURE_INCOMPLETE' -and $e.child_execution_succeeded -eq $false }
+Invoke-Case 'FAULTED_OUTPUT_IS_FAILURE' { $p=New-FakeProcess -OutputMode 'fault';$e=Invoke-SumiGuardManagedRealProcessEvidenceAdapter -Plan (New-SumiGuardManagedProcessEvidencePlan $id) -CorrelationId $id -ProcessFactoryOverride {return $p};-not $e.stdout_capture_completed -and $e.child_execution_succeeded -eq $false }
+Invoke-Case 'DISPOSE_IS_NOT_EXIT_EVIDENCE' { $p=New-FakeProcess -InitialExit $false -ExitAfterKill $false;$e=Invoke-SumiGuardManagedRealProcessEvidenceAdapter -Plan (New-SumiGuardManagedProcessEvidencePlan $id) -CorrelationId $id -ProcessFactoryOverride {return $p};$p.DisposeCalled -and -not $e.process_exit_confirmed }
+Invoke-Case 'CONFIRMATION_AND_CHILD_SUCCESS_DIFFER' { $p=New-FakeProcess -ExitCode 7;$r=Invoke-SumiGuardManagedProcessEvidenceConnection -CorrelationId $id -ConfigurationOverride $c -VerificationOverride $v -RunProcess -UseRealProcessAdapter -ProcessFactoryOverride {return $p};$r.process_confirmation_status -ceq 'PROCESS_CONFIRMED' -and $r.child_execution_succeeded -eq $false -and $r.child_exit_code -eq 7 }
+
+$duplicate=@($executed|Group-Object|Where-Object{$_.Count -ne 1}|ForEach-Object{$_.Name})
+$unexecuted=@($planned|Where-Object{$_ -notin $executed})
+$unexpected=@($executed|Where-Object{$_ -notin $planned})
+$failed=@($results|Where-Object{-not $_.pass}).Count
+[pscustomobject]@{success=($failed -eq 0 -and $duplicate.Count -eq 0 -and $unexecuted.Count -eq 0 -and $unexpected.Count -eq 0);test_count=$results.Count;passed_count=$results.Count-$failed;failed_count=$failed;planned_cases=$planned;executed_cases=@($executed);unexecuted_cases=$unexecuted;duplicate_cases=$duplicate;unexpected_cases=$unexpected;child_process_started=0;fixed_command_started=0;child_codex_started=0;network_access_performed=$false;results=@($results)}|ConvertTo-Json -Compress -Depth 5
+if($failed -or $duplicate.Count -or $unexecuted.Count -or $unexpected.Count){exit 1}
