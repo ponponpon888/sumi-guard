@@ -94,9 +94,9 @@ try {
         '            Get-SumiGuardAssessmentStoreErrorCode -Exception $diagnosticException -DefaultCode ''STORE_CREATE_FAILED'') -Properties @{' + $newLine +
         '            diagnostic_stage = $diagnosticStage' + $newLine +
         '            diagnostic_exception_type = $diagnosticException.GetType().FullName' + $newLine +
-        '            diagnostic_exception_hresult = (''0x{0:X8}'' -f ([uint32]$diagnosticException.HResult))' + $newLine +
+        '            diagnostic_exception_hresult = (''0x{0:X8}'' -f ([int32]$diagnosticException.HResult))' + $newLine +
         '            diagnostic_inner_exception_type = if ($null -eq $diagnosticInner) { $null } else { $diagnosticInner.GetType().FullName }' + $newLine +
-        '            diagnostic_inner_exception_hresult = if ($null -eq $diagnosticInner) { $null } else { (''0x{0:X8}'' -f ([uint32]$diagnosticInner.HResult)) }' + $newLine +
+        '            diagnostic_inner_exception_hresult = if ($null -eq $diagnosticInner) { $null } else { (''0x{0:X8}'' -f ([int32]$diagnosticInner.HResult)) }' + $newLine +
         '        }' + $newLine +
         '    }'
     $catchCount = 0

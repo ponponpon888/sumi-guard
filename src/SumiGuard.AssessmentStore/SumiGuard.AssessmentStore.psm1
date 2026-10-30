@@ -118,12 +118,25 @@ function Test-SumiGuardAssessmentPathContainsReparsePoint {
 
 # Assessment records contain execution identifiers and detection metadata.
 # Keep the same current-user/SYSTEM DACL boundary as the protected body store.
+function Import-SumiGuardAssessmentStoreSecurityModule {
+    $manifest = Join-Path $PSHOME (
+        'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1')
+    if (-not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw [IO.FileNotFoundException]::new()
+    }
+
+    # Import into the caller's current local scope; never publish Security
+    # commands to the caller's global session state.
+    Import-Module -Name $manifest -Scope Local -ErrorAction Stop
+}
+
 function Set-SumiGuardAssessmentStoreAcl {
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute(
         'PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Internal helper runs only during explicit store initialization; fail closed if ACL setup fails.')]
     param([Parameter(Mandatory = $true)][string]$StorePath)
 
+    . Import-SumiGuardAssessmentStoreSecurityModule
     $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
     $systemSid = New-Object System.Security.Principal.SecurityIdentifier('S-1-5-18')
     $acl = New-Object System.Security.AccessControl.DirectorySecurity
@@ -150,6 +163,7 @@ function Test-SumiGuardAssessmentAcl {
         [switch]$RequireProtected
     )
 
+    . Import-SumiGuardAssessmentStoreSecurityModule
     $userSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     $expected = @($userSid, 'S-1-5-18')
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
