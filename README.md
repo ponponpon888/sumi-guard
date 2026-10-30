@@ -45,7 +45,7 @@ flowchart TD
 |---|---|---|
 | Claude Code | 2.1.304 / Windows PowerShell 5.1 | `PreToolUse` 到達、UTF-8 日本語・絵文字、Execution/Assessment 各1件、本文容器0件、生コマンド漏えい0件 |
 | Codex | 使い捨て子セッション / Windows | 実 `PreToolUse`、ExecutionAdapter、LocalStore、独立 OS 観測、`INFERRED_MATCH` |
-| GitHub Actions | Windows PowerShell 5.1 | 構文、文字コード、PSScriptAnalyzer、DPAPI 非依存の合成試験 |
+| GitHub Actions | Windows PowerShell 5.1 | 構文、文字コード、PSScriptAnalyzer、DPAPI 非依存の合成試験、固定子プロセスの正常・非ゼロ終了・タイムアウト経路 |
 
 Claude Code の限定接続試験は 2026-10-20 に実施しました。フック応答は
 `evaluation=UNASSESSABLE`、`assessment_storage=SAVED`、
@@ -162,6 +162,8 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `tests/Invoke-ReadOnlyCliTests.ps1`: 読み取り専用CLIの合成データ試験
 - `tests/Invoke-ExecutionAdapterMetadataLogLimitTests.ps1`: メタデータログ16MiB上限の境界・同時追記・失敗通知満杯・retention途中失敗の合成試験
 - `tests/Invoke-ManagedPowerShellAssessmentRunnerSyntheticTests.ps1`: 無害な子プロセス8ケースで、出力の捕捉・JSON読取り・事後照合の分岐と理由を判定する合成試験
+- `tests/Invoke-ManagedProcessEvidenceRealSmokeTests.ps1`: 固定・無害な子プロセス1件の正常終了を、専用CIジョブで実証するオプトイン試験
+- `tests/Invoke-ManagedProcessEvidenceFailureSmokeTests.ps1`: 固定・無害な子プロセス2件の非ゼロ終了とタイムアウトを、専用CIジョブで実証するオプトイン試験
 - `docs/19-sumi-guard-execution-audit.md`: 設計書
 - `docs/20-local-store.md`: 保存形式、容量、保持、制約
 - `docs/21-execution-localstore-adapter.md`: 接続API、状態、失敗時の扱い
@@ -172,6 +174,7 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `.github/analyzer-baseline.json`: 現在抱えているルール別件数の基準値。超えたら失敗、下回ったら下げる
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
+- `docs/38-managed-process-real-smoke-ci.md`、`docs/39-managed-process-failure-smoke-ci.md`: 固定子プロセスの正常・失敗経路CI試験の条件と限界
 - `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
 - `docs/27-core-privacy-review-summary.md`: PR #8/#9/#10の統合レビューとマージ記録。対象SHA、証拠の帰属、戻し方
 - `SECURITY.md`: 脆弱性報告の窓口、対象範囲、秘密情報を含めない報告方法

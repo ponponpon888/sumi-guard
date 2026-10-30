@@ -4,7 +4,7 @@
 # Windows PowerShell 5.1, carry the UTF-8 BOM that 5.1 needs for non-ASCII
 # text, pass PSScriptAnalyzer at Error severity, and that the test scripts
 # using only synthetic input pass on a clean Windows host. The separate
-# managed-process-real-smoke job exercises one fixed harmless child process.
+# managed-process real-child jobs exercise only fixed harmless child processes.
 #
 # What it does not establish: anything about DPAPI CurrentUser protection,
 # independent OS process observation, DIRECT_MATCH, abnormal/timeout paths,
@@ -67,3 +67,12 @@ jobs:
       - name: Verify one fixed harmless child, separately from synthetic suite
         shell: powershell
         run: .\tests\Invoke-ManagedProcessEvidenceRealSmokeTests.ps1 -RunSmoke
+
+  managed-process-failure-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify fixed nonzero-exit and timeout children, separately from synthetic suite
+        shell: powershell
+        run: .\tests\Invoke-ManagedProcessEvidenceFailureSmokeTests.ps1 -RunSmoke
