@@ -6,9 +6,10 @@
 # using only synthetic input pass on a clean Windows host. The separate
 # managed-process real-child jobs exercise only fixed harmless child processes.
 #
-# What it does not establish: anything about DPAPI CurrentUser protection,
-# independent OS process observation, DIRECT_MATCH, abnormal/timeout paths,
-# post-exit identity revalidation, or behaviour on an operator machine. The DPAPI-dependent tests are excluded with their reasons
+# What it does not establish: DPAPI CurrentUser protection,
+# independent OS process observation, DIRECT_MATCH, arbitrary command safety,
+# real kill failures, unconfirmed termination, post-exit identity revalidation,
+# or behaviour on an operator machine. The DPAPI-dependent tests are excluded with their reasons
 # in .github/scripts/Invoke-SumiGuardCiTestSuite.ps1. A green run is not a
 # measurement record; see docs/25-ci-windows-powershell-check.md.
 name: windows-powershell-5.1-check
