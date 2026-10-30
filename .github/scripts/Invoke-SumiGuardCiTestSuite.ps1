@@ -71,6 +71,10 @@ $excludedTests = @(
     [pscustomobject][ordered]@{
         name = 'Invoke-ManagedProcessEvidenceRealSmokeTests.ps1'
         reason = 'Starts one real fixed-command Windows PowerShell child. It runs in the separate managed-process-real-smoke CI job with explicit -RunSmoke, not in the synthetic/DPAPI-independent suite.'
+    },
+    [pscustomobject][ordered]@{
+        name = 'Invoke-ManagedProcessEvidenceFailureSmokeTests.ps1'
+        reason = 'Starts two real fixed-command Windows PowerShell children for nonzero-exit and timeout handling. It runs in the separate managed-process-failure-smoke CI job with explicit -RunSmoke, not in the synthetic/DPAPI-independent suite.'
     }
 )
 

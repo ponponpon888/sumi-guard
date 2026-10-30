@@ -2,10 +2,10 @@
 
 ## Purpose
 
-This is a **single harmless child process** check that complements, but does
-not replace, the 31 synthetic Managed Process Evidence cases. The check is
-opt-in when run directly and is executed as a separate GitHub Actions job
-(`managed-process-real-smoke`) on an ephemeral `windows-latest` runner.
+This is the Phase 1 **single harmless child process** check. It complements,
+but does not replace, the 31 synthetic Managed Process Evidence cases. The
+check is opt-in when run directly and is executed as a separate GitHub Actions
+job (`managed-process-real-smoke`) on an ephemeral `windows-latest` runner.
 
 `tests/Invoke-ManagedProcessEvidenceRealSmokeTests.ps1 -RunSmoke` uses
 `Invoke-SumiGuardManagedProcessEvidenceConnection` with the actual process
@@ -54,9 +54,13 @@ GitHub-hosted Windows runner and the tested commit**. It does **not** establish:
 - DPAPI CurrentUser behavior or permissions on an operator machine.
 - Independent OS-observer correlation, attack attribution, or `DIRECT_MATCH`.
 - Independent post-exit process identity revalidation or PID-reuse resistance.
-- Real-process nonzero-exit, abnormal termination, kill failure, or timeout
-  behavior. Those paths remain covered only by synthetic cases.
+- Kill failure, output-read failure, and post-exit process identity
+  revalidation. Those paths remain covered only by synthetic cases.
 - Safety of arbitrary commands, live hooks, enforcement, or production use.
+
+Phase 2 adds a separate fixed-child check for the real nonzero-exit and
+timeout paths; see [docs/39](39-managed-process-failure-smoke-ci.md). It does
+not change the scope or result of this normal-path check.
 
 The job has a five-minute limit. If it fails, review the structured failed
 checks rather than treating a partial `PROCESS_CONFIRMED` result as successful
