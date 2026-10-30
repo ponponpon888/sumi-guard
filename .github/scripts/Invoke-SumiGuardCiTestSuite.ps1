@@ -67,6 +67,10 @@ $excludedTests = @(
     [pscustomobject][ordered]@{
         name = 'Invoke-LocalStoreOperatorHardeningTests.ps1'
         reason = 'Gate 3 operator check: inspects the DPAPI CurrentUser blob and master key of the user running it. Run on the operator machine through tools/Invoke-SumiGuardGate3OperatorCheck.ps1.'
+    },
+    [pscustomobject][ordered]@{
+        name = 'Invoke-ManagedProcessEvidenceRealSmokeTests.ps1'
+        reason = 'Starts one real fixed-command Windows PowerShell child. It runs in the separate managed-process-real-smoke CI job with explicit -RunSmoke, not in the synthetic/DPAPI-independent suite.'
     }
 )
 
