@@ -3,11 +3,12 @@
 # What this workflow establishes: the repository's PowerShell files parse under
 # Windows PowerShell 5.1, carry the UTF-8 BOM that 5.1 needs for non-ASCII
 # text, pass PSScriptAnalyzer at Error severity, and that the test scripts
-# using only synthetic input pass on a clean Windows host.
+# using only synthetic input pass on a clean Windows host. The separate
+# managed-process-real-smoke job exercises one fixed harmless child process.
 #
 # What it does not establish: anything about DPAPI CurrentUser protection,
-# independent OS process observation, DIRECT_MATCH, or behaviour on an
-# operator machine. The DPAPI-dependent tests are excluded with their reasons
+# independent OS process observation, DIRECT_MATCH, abnormal/timeout paths,
+# post-exit identity revalidation, or behaviour on an operator machine. The DPAPI-dependent tests are excluded with their reasons
 # in .github/scripts/Invoke-SumiGuardCiTestSuite.ps1. A green run is not a
 # measurement record; see docs/25-ci-windows-powershell-check.md.
 name: windows-powershell-5.1-check
@@ -57,3 +58,12 @@ jobs:
       - name: Run the test scripts that do not depend on DPAPI CurrentUser
         shell: powershell
         run: .\.github\scripts\Invoke-SumiGuardCiTestSuite.ps1
+
+  managed-process-real-smoke:
+    runs-on: windows-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify one fixed harmless child, separately from synthetic suite
+        shell: powershell
+        run: .\tests\Invoke-ManagedProcessEvidenceRealSmokeTests.ps1 -RunSmoke
