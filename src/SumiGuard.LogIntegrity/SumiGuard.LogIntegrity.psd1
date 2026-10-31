@@ -5,7 +5,7 @@
     Author = 'SUMI Guard'
     Description = 'Prefix checkpoints for the append-only NDJSON metadata logs. Read-only; stores nothing and returns no log content or paths.'
     PowerShellVersion = '5.1'
-    FunctionsToExport = @('New-SumiGuardLogCheckpoint', 'Test-SumiGuardLogCheckpoint')
+    FunctionsToExport = @('Get-SumiGuardLogCheckpoint', 'Test-SumiGuardLogCheckpoint')
     CmdletsToExport = @()
     VariablesToExport = @()
     AliasesToExport = @()

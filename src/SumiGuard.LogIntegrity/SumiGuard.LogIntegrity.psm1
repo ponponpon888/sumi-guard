@@ -34,7 +34,7 @@ $script:LogDefinitions = @{
 $script:LogKinds = @('Event', 'Failure', 'Retention', 'Assessment')
 $script:BufferBytes = 65536
 
-function New-SumiGuardLogIntegrityResult {
+function ConvertTo-SumiGuardLogIntegrityResult {
     param(
         [Parameter(Mandatory = $true)][bool]$Success,
         [Parameter(Mandatory = $true)][string]$Status,
@@ -54,7 +54,7 @@ function New-SumiGuardLogIntegrityResult {
 
 # The fixed code travels in Data so that no exception message, path or log
 # byte can reach a result.
-function New-SumiGuardLogIntegrityError {
+function ConvertTo-SumiGuardLogIntegrityError {
     param([Parameter(Mandatory = $true)][string]$Code)
 
     $exception = [InvalidOperationException]::new('SUMI Guard log integrity failure.')
@@ -125,7 +125,7 @@ function Get-SumiGuardLogIntegrityTarget {
     )
 
     if ([string]::IsNullOrWhiteSpace($StorePath)) {
-        throw (New-SumiGuardLogIntegrityError -Code 'STORE_NOT_FOUND')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'STORE_NOT_FOUND')
     }
     $definition = $script:LogDefinitions[$Kind]
     $storeFullPath = [IO.Path]::GetFullPath($StorePath)
@@ -133,23 +133,23 @@ function Get-SumiGuardLogIntegrityTarget {
     $logPath = Join-Path $storeFullPath $definition.file
 
     if (Test-SumiGuardLogIntegrityReparsePath -Path $storeFullPath) {
-        throw (New-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
     }
     if (-not (Test-Path -LiteralPath $storeFullPath -PathType Container)) {
-        throw (New-SumiGuardLogIntegrityError -Code 'STORE_NOT_FOUND')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'STORE_NOT_FOUND')
     }
     if (Test-SumiGuardLogIntegrityReparsePath -Path $lockPath) {
-        throw (New-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
     }
     if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
-        throw (New-SumiGuardLogIntegrityError -Code 'STORE_LOCK_MISSING')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'STORE_LOCK_MISSING')
     }
     if (Test-SumiGuardLogIntegrityReparsePath -Path $logPath) {
-        throw (New-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'REPARSE_PATH_NOT_ALLOWED')
     }
     $exists = Test-Path -LiteralPath $logPath
     if ($exists -and -not (Test-Path -LiteralPath $logPath -PathType Leaf)) {
-        throw (New-SumiGuardLogIntegrityError -Code 'LOG_NOT_A_FILE')
+        throw (ConvertTo-SumiGuardLogIntegrityError -Code 'LOG_NOT_A_FILE')
     }
     return [pscustomobject]@{
         log_path = $logPath
@@ -176,11 +176,11 @@ function Open-SumiGuardLogForRead {
         }
         catch {
             if (-not (Test-SumiGuardLogIntegritySharingViolation -Exception $_.Exception)) {
-                throw (New-SumiGuardLogIntegrityError -Code 'READ_FAILED')
+                throw (ConvertTo-SumiGuardLogIntegrityError -Code 'READ_FAILED')
             }
             $remaining = $TimeoutMilliseconds - $clock.ElapsedMilliseconds
             if ($remaining -le 0) {
-                throw (New-SumiGuardLogIntegrityError -Code 'READ_TIMEOUT')
+                throw (ConvertTo-SumiGuardLogIntegrityError -Code 'READ_TIMEOUT')
             }
             Start-Sleep -Milliseconds ([Math]::Min(25, $remaining))
         }
@@ -204,7 +204,7 @@ function Find-SumiGuardLastLineFeed {
         while ($read -lt $count) {
             $chunk = $Stream.Read($buffer, $read, $count - $read)
             if ($chunk -le 0) {
-                throw (New-SumiGuardLogIntegrityError -Code 'READ_FAILED')
+                throw (ConvertTo-SumiGuardLogIntegrityError -Code 'READ_FAILED')
             }
             $read += $chunk
         }
@@ -235,7 +235,7 @@ function Get-SumiGuardLogPrefixDigest {
             $want = [int][Math]::Min([long]$buffer.Length, $remaining)
             $read = $Stream.Read($buffer, 0, $want)
             if ($read -le 0) {
-                throw (New-SumiGuardLogIntegrityError -Code 'READ_FAILED')
+                throw (ConvertTo-SumiGuardLogIntegrityError -Code 'READ_FAILED')
             }
             for ($index = 0; $index -lt $read; $index++) {
                 if ($buffer[$index] -eq 10) { $lines++ }
@@ -274,7 +274,7 @@ function ConvertTo-SumiGuardCheckpointInteger {
     return $null
 }
 
-# Accepts the object New-SumiGuardLogCheckpoint returned, or the same object
+# Accepts the object Get-SumiGuardLogCheckpoint returned, or the same object
 # after a ConvertTo-Json / ConvertFrom-Json round trip. Anything else is
 # refused rather than interpreted.
 function ConvertFrom-SumiGuardLogCheckpoint {
@@ -312,7 +312,22 @@ function ConvertFrom-SumiGuardLogCheckpoint {
     }
 }
 
-function New-SumiGuardLogCheckpoint {
+function Get-SumiGuardLogCheckpoint {
+    <#
+    .SYNOPSIS
+    Returns a prefix checkpoint for one NDJSON log in a SUMI Guard store.
+    .DESCRIPTION
+    Reads the log without taking the store lock and returns the plain SHA-256,
+    byte count and line count of its bytes up to the last complete line. The
+    checkpoint is returned, not stored: keep it outside the store, or it proves
+    nothing. No log content or path is returned.
+    .PARAMETER StorePath
+    The store directory. It must already contain its writer's lock file.
+    .PARAMETER Kind
+    Event, Failure, Retention (execution store) or Assessment (assessment store).
+    .PARAMETER ReadTimeoutMilliseconds
+    How long to retry opening the log while a sharing violation persists.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$StorePath,
@@ -350,14 +365,14 @@ function New-SumiGuardLogCheckpoint {
             created_at_utc = [DateTimeOffset]::UtcNow.ToString(
                 'yyyy-MM-ddTHH:mm:ss.fffZ', [Globalization.CultureInfo]::InvariantCulture)
         }
-        return New-SumiGuardLogIntegrityResult -Success $true -Status 'CHECKPOINT_CREATED' -Properties ([ordered]@{
+        return ConvertTo-SumiGuardLogIntegrityResult -Success $true -Status 'CHECKPOINT_CREATED' -Properties ([ordered]@{
             log_present = [bool]$target.exists
             incomplete_tail_bytes = [long]($currentBytes - $coveredBytes)
             checkpoint = $checkpoint
         })
     }
     catch {
-        return New-SumiGuardLogIntegrityResult -Success $false -Status (
+        return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status (
             Get-SumiGuardLogIntegrityErrorCode -Exception $_.Exception -DefaultCode 'CHECKPOINT_FAILED')
     }
     finally {
@@ -369,6 +384,21 @@ function New-SumiGuardLogCheckpoint {
 # never take a changed log for an intact one. verification_completed tells a
 # finding (MODIFIED, TRUNCATED) apart from a check that could not run.
 function Test-SumiGuardLogCheckpoint {
+    <#
+    .SYNOPSIS
+    Checks that a SUMI Guard NDJSON log still starts with a checkpoint's bytes.
+    .DESCRIPTION
+    Returns INTACT (success = $true), MODIFIED or TRUNCATED, or a fixed error
+    code with verification_completed = $false. The log kind comes from the
+    checkpoint. No log content or path is returned.
+    .PARAMETER StorePath
+    The store directory the checkpoint was taken from.
+    .PARAMETER Checkpoint
+    The checkpoint object from Get-SumiGuardLogCheckpoint, directly or after a
+    ConvertTo-Json / ConvertFrom-Json round trip.
+    .PARAMETER ReadTimeoutMilliseconds
+    How long to retry opening the log while a sharing violation persists.
+    #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$StorePath,
@@ -380,7 +410,7 @@ function Test-SumiGuardLogCheckpoint {
     try {
         $expected = ConvertFrom-SumiGuardLogCheckpoint -Checkpoint $Checkpoint
         if ($null -eq $expected) {
-            return New-SumiGuardLogIntegrityResult -Success $false -Status 'CHECKPOINT_INVALID' -Properties @{
+            return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status 'CHECKPOINT_INVALID' -Properties @{
                 verification_completed = $false
             }
         }
@@ -394,27 +424,27 @@ function Test-SumiGuardLogCheckpoint {
         if (-not $target.exists) {
             if ($expected.covered_bytes -eq 0) {
                 $common['appended_bytes'] = [long]0
-                return New-SumiGuardLogIntegrityResult -Success $true -Status 'INTACT' -Properties $common
+                return ConvertTo-SumiGuardLogIntegrityResult -Success $true -Status 'INTACT' -Properties $common
             }
             $common['current_bytes'] = [long]0
-            return New-SumiGuardLogIntegrityResult -Success $false -Status 'TRUNCATED' -Properties $common
+            return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status 'TRUNCATED' -Properties $common
         }
         $stream = Open-SumiGuardLogForRead -Path $target.log_path `
             -TimeoutMilliseconds $ReadTimeoutMilliseconds
         $currentBytes = $stream.Length
         if ($currentBytes -lt $expected.covered_bytes) {
             $common['current_bytes'] = [long]$currentBytes
-            return New-SumiGuardLogIntegrityResult -Success $false -Status 'TRUNCATED' -Properties $common
+            return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status 'TRUNCATED' -Properties $common
         }
         $digest = Get-SumiGuardLogPrefixDigest -Stream $stream -Length $expected.covered_bytes
         if ($digest.sha256 -cne $expected.sha256 -or $digest.lines -ne $expected.covered_lines) {
-            return New-SumiGuardLogIntegrityResult -Success $false -Status 'MODIFIED' -Properties $common
+            return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status 'MODIFIED' -Properties $common
         }
         $common['appended_bytes'] = [long]($currentBytes - $expected.covered_bytes)
-        return New-SumiGuardLogIntegrityResult -Success $true -Status 'INTACT' -Properties $common
+        return ConvertTo-SumiGuardLogIntegrityResult -Success $true -Status 'INTACT' -Properties $common
     }
     catch {
-        return New-SumiGuardLogIntegrityResult -Success $false -Status (
+        return ConvertTo-SumiGuardLogIntegrityResult -Success $false -Status (
             Get-SumiGuardLogIntegrityErrorCode -Exception $_.Exception -DefaultCode 'VERIFY_FAILED') -Properties @{
             verification_completed = $false
         }
@@ -424,4 +454,4 @@ function Test-SumiGuardLogCheckpoint {
     }
 }
 
-Export-ModuleMember -Function @('New-SumiGuardLogCheckpoint', 'Test-SumiGuardLogCheckpoint')
+Export-ModuleMember -Function @('Get-SumiGuardLogCheckpoint', 'Test-SumiGuardLogCheckpoint')

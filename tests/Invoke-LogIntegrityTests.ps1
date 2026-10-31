@@ -59,7 +59,7 @@ function Watch-Output {
     return $Value
 }
 
-function New-ExecutionStore {
+function Initialize-ExecutionStore {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     $path = Join-Path $testRoot $Name
@@ -68,7 +68,7 @@ function New-ExecutionStore {
     return $path
 }
 
-function Set-LogText {
+function Write-LogText {
     param(
         [Parameter(Mandatory = $true)][string]$StorePath,
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Text,
@@ -105,13 +105,13 @@ function Get-SyntheticLine {
     return ('{"schema_version":1,"sequence":' + $Number + ',"note":"' + $secretMarker + '"}' + "`n")
 }
 
-function New-Checkpoint {
+function Get-Checkpoint {
     param(
         [Parameter(Mandatory = $true)][string]$StorePath,
         [string]$Kind = 'Event'
     )
 
-    $result = Watch-Output (New-SumiGuardLogCheckpoint -StorePath $StorePath -Kind $Kind)
+    $result = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath $StorePath -Kind $Kind)
     Assert-Test ($result.success -and $result.status -ceq 'CHECKPOINT_CREATED') (
         'Checkpoint was not created: ' + $result.status)
     return $result
@@ -160,10 +160,10 @@ try {
     Import-Module -Name $integrityManifest -Force -ErrorAction Stop
 
     $currentCase = 'checkpoint_digest_is_plain_sha256_of_complete_lines'
-    $store = New-ExecutionStore -Name 'plain'
+    $store = Initialize-ExecutionStore -Name 'plain'
     $complete = (Get-SyntheticLine 1) + (Get-SyntheticLine 2)
-    Set-LogText -StorePath $store -Text ($complete + '{"unfinished":')
-    $created = New-Checkpoint -StorePath $store
+    Write-LogText -StorePath $store -Text ($complete + '{"unfinished":')
+    $created = Get-Checkpoint -StorePath $store
     Assert-Test ($created.checkpoint.covered_bytes -eq $utf8.GetByteCount($complete)) 'Covered bytes did not stop at the last line feed.'
     Assert-Test ($created.checkpoint.covered_lines -eq 2) 'Covered line count is wrong.'
     Assert-Test ($created.checkpoint.sha256 -ceq (Get-ExpectedSha256 $complete)) 'Digest is not the plain SHA-256 of the covered prefix.'
@@ -191,11 +191,11 @@ try {
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{ status = $roundTripResult.status })
 
     $currentCase = 'same_length_byte_edit_is_modified'
-    $editStore = New-ExecutionStore -Name 'edit'
+    $editStore = Initialize-ExecutionStore -Name 'edit'
     $editText = (Get-SyntheticLine 1) + (Get-SyntheticLine 2) + (Get-SyntheticLine 3)
-    Set-LogText -StorePath $editStore -Text $editText
-    $editCheckpoint = (New-Checkpoint -StorePath $editStore).checkpoint
-    Set-LogText -StorePath $editStore -Text ($editText.Replace('"sequence":2', '"sequence":7'))
+    Write-LogText -StorePath $editStore -Text $editText
+    $editCheckpoint = (Get-Checkpoint -StorePath $editStore).checkpoint
+    Write-LogText -StorePath $editStore -Text ($editText.Replace('"sequence":2', '"sequence":7'))
     $edited = Test-Checkpoint -StorePath $editStore -Checkpoint $editCheckpoint
     Assert-Test ((-not $edited.success) -and $edited.status -ceq 'MODIFIED') ('Expected MODIFIED, got ' + $edited.status)
     Assert-Test ($edited.verification_completed) 'A finding must be a completed verification.'
@@ -207,19 +207,19 @@ try {
 
     $currentCase = 'deleted_middle_line_with_padding_is_modified'
     $padText = (Get-SyntheticLine 1) + (Get-SyntheticLine 3) + (Get-SyntheticLine 4) + (Get-SyntheticLine 5)
-    Set-LogText -StorePath $editStore -Text $padText
+    Write-LogText -StorePath $editStore -Text $padText
     $deleted = Test-Checkpoint -StorePath $editStore -Checkpoint $editCheckpoint
     Assert-Test ($deleted.status -ceq 'MODIFIED') ('Expected MODIFIED after a deletion hidden by appends, got ' + $deleted.status)
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{ status = $deleted.status })
 
     $currentCase = 'reordered_lines_are_modified'
-    Set-LogText -StorePath $editStore -Text ((Get-SyntheticLine 2) + (Get-SyntheticLine 1) + (Get-SyntheticLine 3))
+    Write-LogText -StorePath $editStore -Text ((Get-SyntheticLine 2) + (Get-SyntheticLine 1) + (Get-SyntheticLine 3))
     $reordered = Test-Checkpoint -StorePath $editStore -Checkpoint $editCheckpoint
     Assert-Test ($reordered.status -ceq 'MODIFIED') ('Expected MODIFIED after reordering, got ' + $reordered.status)
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{ status = $reordered.status })
 
     $currentCase = 'shortened_log_is_truncated'
-    Set-LogText -StorePath $editStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 2))
+    Write-LogText -StorePath $editStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 2))
     $truncated = Test-Checkpoint -StorePath $editStore -Checkpoint $editCheckpoint
     Assert-Test ((-not $truncated.success) -and $truncated.status -ceq 'TRUNCATED') ('Expected TRUNCATED, got ' + $truncated.status)
     Remove-Item -LiteralPath (Join-Path $editStore 'events.ndjson') -Force
@@ -231,21 +231,21 @@ try {
     })
 
     $currentCase = 'crlf_lines_are_covered'
-    $crlfStore = New-ExecutionStore -Name 'crlf'
+    $crlfStore = Initialize-ExecutionStore -Name 'crlf'
     $crlfText = '{"a":1}' + "`r`n" + '{"b":2}' + "`r`n"
-    Set-LogText -StorePath $crlfStore -Text $crlfText
-    $crlf = New-Checkpoint -StorePath $crlfStore
+    Write-LogText -StorePath $crlfStore -Text $crlfText
+    $crlf = Get-Checkpoint -StorePath $crlfStore
     Assert-Test ($crlf.checkpoint.covered_lines -eq 2 -and $crlf.incomplete_tail_bytes -eq 0) 'CRLF lines were not counted as complete.'
     Assert-Test ($crlf.checkpoint.sha256 -ceq (Get-ExpectedSha256 $crlfText)) 'CRLF digest mismatch.'
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{ covered_lines = $crlf.checkpoint.covered_lines })
 
     $currentCase = 'empty_and_missing_logs_checkpoint_as_zero'
-    $emptyStore = New-ExecutionStore -Name 'empty'
-    $missingLog = New-Checkpoint -StorePath $emptyStore -Kind 'Failure'
+    $emptyStore = Initialize-ExecutionStore -Name 'empty'
+    $missingLog = Get-Checkpoint -StorePath $emptyStore -Kind 'Failure'
     Assert-Test ((-not $missingLog.log_present) -and $missingLog.checkpoint.covered_bytes -eq 0) 'Missing log was not a zero checkpoint.'
     Assert-Test ($missingLog.checkpoint.sha256 -ceq (Get-ExpectedSha256 '')) 'Zero checkpoint digest is not SHA-256 of nothing.'
     $stillMissing = Test-Checkpoint -StorePath $emptyStore -Checkpoint $missingLog.checkpoint
-    Set-LogText -StorePath $emptyStore -Text (Get-SyntheticLine 1) -FileName 'failures.ndjson'
+    Write-LogText -StorePath $emptyStore -Text (Get-SyntheticLine 1) -FileName 'failures.ndjson'
     $afterFirst = Test-Checkpoint -StorePath $emptyStore -Checkpoint $missingLog.checkpoint
     Assert-Test ($stillMissing.status -ceq 'INTACT' -and $afterFirst.status -ceq 'INTACT') 'Zero checkpoint did not stay INTACT as the log grew.'
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{
@@ -254,12 +254,12 @@ try {
     })
 
     $currentCase = 'checkpoint_kind_selects_the_log'
-    $kindStore = New-ExecutionStore -Name 'kinds'
-    Set-LogText -StorePath $kindStore -Text (Get-SyntheticLine 1) -FileName 'retention.ndjson'
-    $retention = New-Checkpoint -StorePath $kindStore -Kind 'Retention'
-    Set-LogText -StorePath $kindStore -Text (Get-SyntheticLine 9) -FileName 'events.ndjson'
+    $kindStore = Initialize-ExecutionStore -Name 'kinds'
+    Write-LogText -StorePath $kindStore -Text (Get-SyntheticLine 1) -FileName 'retention.ndjson'
+    $retention = Get-Checkpoint -StorePath $kindStore -Kind 'Retention'
+    Write-LogText -StorePath $kindStore -Text (Get-SyntheticLine 9) -FileName 'events.ndjson'
     $retentionCheck = Test-Checkpoint -StorePath $kindStore -Checkpoint $retention.checkpoint
-    Set-LogText -StorePath $kindStore -Text (Get-SyntheticLine 8) -FileName 'retention.ndjson'
+    Write-LogText -StorePath $kindStore -Text (Get-SyntheticLine 8) -FileName 'retention.ndjson'
     $retentionChanged = Test-Checkpoint -StorePath $kindStore -Checkpoint $retention.checkpoint
     Assert-Test ($retentionCheck.status -ceq 'INTACT' -and $retentionChanged.status -ceq 'MODIFIED') 'Checkpoint did not follow its own log kind.'
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{
@@ -295,11 +295,11 @@ try {
     $currentCase = 'stores_without_the_writer_lock_are_refused'
     $noLock = Join-Path $testRoot 'no-lock'
     $null = New-Item -ItemType Directory -Path $noLock
-    Set-LogText -StorePath $noLock -Text (Get-SyntheticLine 1)
-    $noLockCreate = Watch-Output (New-SumiGuardLogCheckpoint -StorePath $noLock -Kind 'Event')
+    Write-LogText -StorePath $noLock -Text (Get-SyntheticLine 1)
+    $noLockCreate = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath $noLock -Kind 'Event')
     $noLockVerify = Test-Checkpoint -StorePath $noLock -Checkpoint $created.checkpoint
-    $absent = Watch-Output (New-SumiGuardLogCheckpoint -StorePath (Join-Path $testRoot 'absent') -Kind 'Event')
-    $wrongStore = Watch-Output (New-SumiGuardLogCheckpoint -StorePath $store -Kind 'Assessment')
+    $absent = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath (Join-Path $testRoot 'absent') -Kind 'Event')
+    $wrongStore = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath $store -Kind 'Assessment')
     Assert-Test ($noLockCreate.status -ceq 'STORE_LOCK_MISSING' -and $noLockVerify.status -ceq 'STORE_LOCK_MISSING') 'Store without lock was accepted.'
     Assert-Test ($absent.status -ceq 'STORE_NOT_FOUND') ('Missing store gave ' + $absent.status)
     Assert-Test ($wrongStore.status -ceq 'STORE_LOCK_MISSING') 'An execution store was accepted as an assessment store.'
@@ -312,14 +312,14 @@ try {
     })
 
     $currentCase = 'directory_in_place_of_log_is_refused'
-    $dirStore = New-ExecutionStore -Name 'dir-log'
+    $dirStore = Initialize-ExecutionStore -Name 'dir-log'
     $null = New-Item -ItemType Directory -Path (Join-Path $dirStore 'events.ndjson')
-    $dirLog = Watch-Output (New-SumiGuardLogCheckpoint -StorePath $dirStore -Kind 'Event')
+    $dirLog = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath $dirStore -Kind 'Event')
     Assert-Test ($dirLog.status -ceq 'LOG_NOT_A_FILE') ('Directory log gave ' + $dirLog.status)
     Add-TestResult -Name $currentCase -Evidence ([ordered]@{ status = $dirLog.status })
 
     $currentCase = 'symbolic_link_log_is_refused'
-    $linkStore = New-ExecutionStore -Name 'link'
+    $linkStore = Initialize-ExecutionStore -Name 'link'
     $linkTarget = Join-Path $testRoot 'outside.ndjson'
     [IO.File]::WriteAllBytes($linkTarget, $utf8.GetBytes((Get-SyntheticLine 1)))
     $linkCreated = $false
@@ -331,7 +331,7 @@ try {
         $linkCreated = $false
     }
     if ($linkCreated) {
-        $linked = Watch-Output (New-SumiGuardLogCheckpoint -StorePath $linkStore -Kind 'Event')
+        $linked = Watch-Output (Get-SumiGuardLogCheckpoint -StorePath $linkStore -Kind 'Event')
         Assert-Test ($linked.status -ceq 'REPARSE_PATH_NOT_ALLOWED') ('Linked log gave ' + $linked.status)
         Add-TestResult -Name $currentCase -Evidence ([ordered]@{ status = $linked.status })
     }
@@ -343,15 +343,15 @@ try {
     }
 
     $currentCase = 'open_writer_handle_does_not_block_a_check'
-    $writerStore = New-ExecutionStore -Name 'writer'
-    Set-LogText -StorePath $writerStore -Text (Get-SyntheticLine 1)
+    $writerStore = Initialize-ExecutionStore -Name 'writer'
+    Write-LogText -StorePath $writerStore -Text (Get-SyntheticLine 1)
     $writer = New-Object IO.FileStream(
         (Join-Path $writerStore 'events.ndjson'),
         [IO.FileMode]::Open,
         [IO.FileAccess]::Write,
         [IO.FileShare]::Read)
     try {
-        $whileOpen = New-Checkpoint -StorePath $writerStore
+        $whileOpen = Get-Checkpoint -StorePath $writerStore
         [void]$writer.Seek(0, [IO.SeekOrigin]::End)
         [byte[]]$more = $utf8.GetBytes((Get-SyntheticLine 2))
         $writer.Write($more, 0, $more.Length)
@@ -368,8 +368,8 @@ try {
     })
 
     $currentCase = 'tool_writes_outside_store_and_verifies'
-    $toolStore = New-ExecutionStore -Name 'tool-store'
-    Set-LogText -StorePath $toolStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 2))
+    $toolStore = Initialize-ExecutionStore -Name 'tool-store'
+    Write-LogText -StorePath $toolStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 2))
     $checkpointFile = Join-Path $testRoot 'kept-elsewhere.checkpoint.json'
     $toolCreate = Invoke-Tool -Arguments @('-StorePath', $toolStore, '-Kind', 'Event', '-OutFile', $checkpointFile)
     Assert-Test ($toolCreate.exit_code -eq 0 -and $null -ne $toolCreate.summary -and $toolCreate.summary.status -ceq 'CHECKPOINT_WRITTEN') (
@@ -383,7 +383,7 @@ try {
     Assert-Test (-not (Test-Path -LiteralPath (Join-Path $toolStore 'inside.json'))) 'A refused checkpoint file exists.'
     Add-LogText -StorePath $toolStore -Text (Get-SyntheticLine 3)
     $toolIntact = Invoke-Tool -Arguments @('-StorePath', $toolStore, '-CheckpointFile', $checkpointFile)
-    Set-LogText -StorePath $toolStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 3) + (Get-SyntheticLine 3))
+    Write-LogText -StorePath $toolStore -Text ((Get-SyntheticLine 1) + (Get-SyntheticLine 3) + (Get-SyntheticLine 3))
     $toolModified = Invoke-Tool -Arguments @('-StorePath', $toolStore, '-CheckpointFile', $checkpointFile)
     Assert-Test ($toolIntact.exit_code -eq 0 -and $toolIntact.summary.status -ceq 'INTACT') 'Tool verify did not report INTACT.'
     Assert-Test ($toolModified.exit_code -eq 2 -and $toolModified.summary.status -ceq 'MODIFIED') 'Tool verify did not report MODIFIED with exit 2.'
@@ -415,7 +415,7 @@ try {
             -InterpreterVerified $true
         $saveFirst = Save-SumiGuardAssessment -StorePath $assessmentStore -Assessment $first -EvaluationOrigin 'SYNTHETIC_TEST'
         Assert-Test ($saveFirst.success) ('First save failed: ' + $saveFirst.status)
-        $assessmentCheckpoint = (New-Checkpoint -StorePath $assessmentStore -Kind 'Assessment').checkpoint
+        $assessmentCheckpoint = (Get-Checkpoint -StorePath $assessmentStore -Kind 'Assessment').checkpoint
         $saveSecond = Save-SumiGuardAssessment -StorePath $assessmentStore -Assessment $second -EvaluationOrigin 'SYNTHETIC_TEST'
         Assert-Test ($saveSecond.success) ('Second save failed: ' + $saveSecond.status)
         $afterReplace = Test-Checkpoint -StorePath $assessmentStore -Checkpoint $assessmentCheckpoint
@@ -458,10 +458,16 @@ try {
     })
 }
 catch {
+    # Assertion messages are this script's own fixed text, so they may reach the
+    # CI annotation. Any other exception reports its type only: its message can
+    # carry a runner path.
+    $ownAssertion = $_.Exception -is [InvalidOperationException] -and
+        $_.Exception.GetType() -eq [InvalidOperationException]
     $failure = [pscustomobject][ordered]@{
         failure_stage = $currentCase
+        failure_line = $_.InvocationInfo.ScriptLineNumber
         type = $_.Exception.GetType().FullName
-        message = $_.Exception.Message
+        message = if ($ownAssertion) { $_.Exception.Message } else { '<withheld>' }
     }
 }
 finally {
@@ -481,6 +487,10 @@ $summary = [pscustomobject][ordered]@{
     results = $results.ToArray()
     not_run = $notRun.ToArray()
     failure = $failure
+    failure_stage = if ($null -ne $failure) { $failure.failure_stage } else { $null }
+    failure_line = if ($null -ne $failure) { $failure.failure_line } else { $null }
+    failure_exception_type = if ($null -ne $failure) { $failure.type } else { $null }
+    failed_cases = if ($null -ne $failure) { @($failure.failure_stage + ': ' + $failure.message) } else { @() }
     test_root_cleaned = -not (Test-Path -LiteralPath $testRoot)
 }
 $summary | ConvertTo-Json -Depth 10

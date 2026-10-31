@@ -14,7 +14,7 @@
 
 公開コマンドは次の2個です。
 
-- `New-SumiGuardLogCheckpoint -StorePath -Kind`: 記録の現在の「完結した最後の行」までの
+- `Get-SumiGuardLogCheckpoint -StorePath -Kind`: 記録の現在の「完結した最後の行」までの
   SHA-256、バイト数、行数をチェックポイントとして返す
 - `Test-SumiGuardLogCheckpoint -StorePath -Checkpoint`: チェックポイントと今の記録を照合する
 

@@ -65,7 +65,7 @@ if ($PSCmdlet.ParameterSetName -ceq 'Create') {
         Write-SumiGuardSummary -Summary ([ordered]@{ mode = 'Create'; status = 'CHECKPOINT_FILE_EXISTS' }) -ExitCode 1
     }
 
-    $result = SumiGuard.LogIntegrity\New-SumiGuardLogCheckpoint -StorePath $storeFull -Kind $Kind
+    $result = SumiGuard.LogIntegrity\Get-SumiGuardLogCheckpoint -StorePath $storeFull -Kind $Kind
     if (-not $result.success) {
         Write-SumiGuardSummary -Summary ([ordered]@{ mode = 'Create'; status = $result.status }) -ExitCode 1
     }
