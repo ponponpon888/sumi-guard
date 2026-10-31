@@ -23,7 +23,7 @@
 | 境界 | 前提と扱い |
 |---|---|
 | 外部コンテンツ | コマンド本文、ファイル内容、ネットワーク由来文字列は攻撃者が制御し得る入力として扱う。本文を安全な証拠とはみなさない。 |
-| AIホスト | `PreToolUse`入力を渡す主体。フック入力は実行前の情報であり、対象プロセスの実行や実行結果を証明しない。deny の尊重は Claude Code 2.1.309/2.1.310 の1経路で実測したが、他の版・他のツール・Codex では保証しない。 |
+| AIホスト | `PreToolUse`入力を渡す主体。フック入力は実行前の情報であり、対象プロセスの実行や実行結果を証明しない。deny の尊重は Claude Code 2.1.309 の Write ツール（ゲート2）と 2.1.310 の Bash ツール（ゲート4）で実測したが、他の版・他のツール・Codex では保証しない。 |
 | 管理下ランナー | 明示的に管理された実行経路でのみ、起動ファイル・引数・本文の一致を別途確認できる。通常フックの入力にその証明があるとは扱わない。 |
 | Windowsユーザー | DPAPI `CurrentUser` とACLは通常の別ユーザーアクセスを抑えるが、同じユーザー権限の別プロセス、管理者、侵害済みセッションを信頼境界の外へ押し出せない。 |
 | 外部監査基準 | 署名、失効、受領証、監査整合性などの要求は、masterの保存記録だけでは満たしたと判断しない。 |
@@ -46,7 +46,7 @@
 | GitHub CIを運用端末のセキュリティ証明と誤解する | workflowはPowerShell 5.1構文・BOM、PSScriptAnalyzer、DPAPI非依存の合成試験を実行し、DPAPI依存試験を明示的に除外する。 | `.github/workflows/windows-powershell-5.1-check.yml`、`.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`、`docs/25` | CIに運用ストア、実資格情報、恒久フック、DPAPI CurrentUser、実ホストのdeny尊重を持ち込まない。secret scanning、Dependabot、private vulnerability reportingは確認時点で有効と確認できない。 |
 | 外部監査基準に対する証拠の真正性を過大評価する | schema 1、ハッシュ、時刻、状態、相関の意味を記録するが、限界を文書化する。 | `docs/19`、`docs/21`、`docs/24` | 署名、鍵管理、失効、受領証、Audit Integrity、改ざん不能な外部保管はmasterにない。PR #2の提案や将来設計を実装済みと扱わない。 |
 | 強制モードが意図せず有効になり、開発操作を止める | 強制フックはMONITORフックと別スクリプトで、どこにも登録しない。設定は運用者の制御ディレクトリ（現在ユーザーとSYSTEMだけのACL、マーカー必須）の `enforcement.json` だけから読み、フック入力からは決めない。疑わしい設定はすべてMONITOR扱い。`ENFORCEMENT_OFF` を置けば次の呼び出しから止まる。強制するのは許可リストの経路だけ。 | `tests/Invoke-EnforcementControlSyntheticTests.ps1`、`tests/Invoke-EnforcementHookSyntheticTests.ps1`、`docs/36`、`docs/37`、`measurements/2026-10-28-gate4-operator-check.md` | 同じユーザー権限のプロセスは制御ディレクトリを書き換えられる。保存先の故障は強制経路の操作をすべて止める（意図した挙動）。実測は Claude Code の Bash 1経路だけ。 |
-| ホストが deny に従わない、または版で挙動が変わる | deny は固定の `permissionDecision: deny` JSON で返し、終了コードは常に0。ホストが従ったかは別の測定で確かめる。 | `measurements/2026-10-23-claude-pretooluse-deny-gate2.md`、`measurements/2026-10-28-gate4-operator-check.md` | Claude Code の更新で仕様が変わり得る。Codex は未測定。フックのタイムアウトでは遮断しない。 |
+| ホストが deny に従わない、または版で挙動が変わる | deny は固定の `permissionDecision: deny` JSON で返し、終了コードは常に0。ホストが従ったかは別の測定で確かめる。 | `measurements/2026-10-23-claude-pretooluse-deny-gate2.md`、`measurements/2026-10-28-gate4-operator-check.md` | Claude Code の更新で仕様が変わり得る。PowerShell ツール経由の deny は未到達のまま（ゲート2の記録参照）。Codex は未測定。フックのタイムアウトでは遮断しない。 |
 | 管理下プロセスの識別を偽装する | 本番アダプターが自ら起動した `Process` から取ったPID・開始時刻だけを `PROCESS_CONFIRMED` に昇格し、呼出し元や試験用の証拠は `PROCESS_EVIDENCE_UNTRUSTED` で止める。 | `tests/Invoke-ManagedProcessEvidenceTests.ps1`、`docs/40` | 同じPowerShellプロセス内のコードは識別の登録を偽造できる。終了後のPID再利用への完全な耐性はない。暗号学的・永続的な識別の証明ではない。 |
 
 ## 残余リスクの扱い
