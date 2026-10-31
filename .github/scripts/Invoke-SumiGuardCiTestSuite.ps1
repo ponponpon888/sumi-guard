@@ -35,6 +35,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-EnforcementHookSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-EnforcementDemoSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ClaudeResponseSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-LogIntegrityTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-HookAssessmentStoreAdapterTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedAssessmentStoreDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedAssessmentVerificationConnectionTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
