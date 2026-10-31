@@ -16,6 +16,17 @@ measurement records that back its claims; a claim without a record is not made.
 - **CI**: `tests/Invoke-EnforcementDemoSyntheticTests.ps1` runs the demo with
   the hook's test seam in place of the DPAPI store and checks every scene,
   the cast file, cleanup, and that no path or user name is printed.
+- **Claude Code MONITOR hook setup** (`tools/Invoke-SumiGuardClaudeMonitorHookSetup.ps1`,
+  `SumiGuard.HookSetup`): `-Action Install` registers the MONITOR hook for the
+  PowerShell tool in one named settings file, using the registration verified
+  in docs/28; `-Action Uninstall` removes only that entry. Everything else in
+  the file is checked to be unchanged before writing, a second Install is a
+  no-op, a changed file is backed up beside itself, written through a
+  temporary file and read back. `-WhatIf` writes nothing. Never registers the
+  enforcement hook and never deletes a store.
+  ([docs/42](docs/42-claude-monitor-hook-setup.md))
+- **CI**: `tests/Invoke-ClaudeMonitorHookSetupTests.ps1` (synthetic settings
+  and stand-in stores, DPAPI-independent).
 
 ## [0.2.0-preview] - 2026-10-28
 
