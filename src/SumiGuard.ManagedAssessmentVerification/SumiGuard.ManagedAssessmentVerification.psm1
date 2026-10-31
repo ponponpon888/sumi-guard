@@ -1,9 +1,39 @@
 ﻿Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+$script:SumiGuardTrustedPostExecutionEvidence = New-Object 'System.Runtime.CompilerServices.ConditionalWeakTable[object,object]'
 
 function Test-SumiGuardTextEqual { param([AllowNull()][string]$Left, [AllowNull()][string]$Right) return ($null -ne $Left -and $null -ne $Right -and $Left -ceq $Right) }
 function Test-SumiGuardExecutionId { param([AllowNull()][string]$Value) return ($null -ne $Value -and $Value -cmatch '^[0-9a-f]{32}$') }
 function Get-SumiGuardEvidenceValue { param([AllowNull()]$Evidence, [Parameter(Mandatory = $true)][string]$Name) if ($null -eq $Evidence) { return $null }; $property = $Evidence.PSObject.Properties[$Name]; if ($null -eq $property) { return $null }; return $property.Value }
+function Register-SumiGuardTrustedPostExecutionEvidence {
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '', Justification = 'Stores only an in-memory, module-private identity attestation; it does not change external state.')]
+    # Intentionally not exported.  The runner calls this only for an evidence
+    # instance it created after acquiring a real Process handle.  A serialized
+    # or caller-created PSObject cannot recreate this object-identity binding.
+    param([Parameter(Mandatory = $true)]$Evidence)
+    $marker = New-Object object
+    $script:SumiGuardTrustedPostExecutionEvidence.Add($Evidence, $marker)
+}
+function Test-SumiGuardTrustedPostExecutionEvidence {
+    param([AllowNull()]$Evidence)
+    if ($null -eq $Evidence) { return $false }
+    $marker = $null
+    return $script:SumiGuardTrustedPostExecutionEvidence.TryGetValue($Evidence, [ref]$marker)
+}
+function Test-SumiGuardObservedProcessIdentity {
+    param([AllowNull()]$Evidence)
+    $handleHeld = Get-SumiGuardEvidenceValue $Evidence 'process_handle_obtained'
+    $observedProcessId = Get-SumiGuardEvidenceValue $Evidence 'observed_pid'
+    $started = [string](Get-SumiGuardEvidenceValue $Evidence 'observed_start_time_utc')
+    $parsedStart = [DateTime]::MinValue
+    if ($handleHeld -ne $true -or $null -eq $observedProcessId -or [string]::IsNullOrWhiteSpace($started)) { return $false }
+    try { if ([int]$observedProcessId -le 0) { return $false } } catch { return $false }
+    # Evidence is serialized as the round-trip UTC form emitted by the adapter.
+    # Culture-dependent input, local offsets and DateTimeOffset's permissive
+    # parser must not turn untrusted text into process-identity evidence.
+    if ($started -cnotmatch '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$') { return $false }
+    return [DateTime]::TryParseExact($started, 'yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AdjustToUniversal, [ref]$parsedStart)
+}
 function New-SumiGuardManagedVerificationResult {
     param([Parameter(Mandatory = $true)][string]$PlanStatus,[Parameter(Mandatory = $true)][string]$PlanReasonCode,[Parameter(Mandatory = $true)][string]$ProcessStatus,[Parameter(Mandatory = $true)][string]$ProcessReasonCode)
     $verified = $PlanStatus -ceq 'VERIFIED_LAUNCH_PLAN'
@@ -54,9 +84,18 @@ function Test-SumiGuardManagedAssessmentEvidence {
             if ($null -eq $started -or -not [bool]$started) {$processStatus='PROCESS_UNVERIFIED';$processReason='PROCESS_EVIDENCE_MISSING'}
             elseif (-not (Test-SumiGuardExecutionId $observedExecutionId) -or -not (Test-SumiGuardTextEqual $observedExecutionId $PlannedExecutionId)) {$processStatus='PROCESS_UNVERIFIED';$processReason='PROCESS_EXECUTION_ID_MISMATCH'}
             elseif (-not (Test-SumiGuardTextEqual $fixedExecutable $observedExecutable)) {$processStatus='PROCESS_UNVERIFIED';$processReason='PROCESS_EXECUTABLE_MISMATCH'}
+            # A PID is recyclable. Confirmation therefore requires the Process
+            # instance retained at successful start and its start timestamp;
+            # no post-exit PID lookup is used to fill either value in.
+            # PostExecutionEvidence is an API input, not an authority.  In
+            # particular, process_handle_obtained=true is forgeable when sent
+            # by a caller.  It must be the exact in-memory instance attested by
+            # the built-in adapter after native-handle acquisition.
+            elseif (-not (Test-SumiGuardTrustedPostExecutionEvidence $PostExecutionEvidence)) {$processStatus='PROCESS_UNVERIFIED';$processReason='PROCESS_EVIDENCE_UNTRUSTED'}
+            elseif (-not (Test-SumiGuardObservedProcessIdentity $PostExecutionEvidence)) {$processStatus='PROCESS_UNVERIFIED';$processReason='PROCESS_IDENTITY_EVIDENCE_MISSING'}
             else {$processStatus='PROCESS_CONFIRMED';$processReason='PROCESS_EVIDENCE_CONFIRMED'}
         }
-        return New-SumiGuardManagedVerificationResult $planStatus $planReason $processStatus $processReason
-    } catch { return New-SumiGuardManagedVerificationResult 'UNVERIFIED_LAUNCH_PLAN' 'VERIFICATION_FAILED' 'PROCESS_UNVERIFIED' 'VERIFICATION_FAILED' }
+        return New-SumiGuardManagedVerificationResult -PlanStatus $planStatus -PlanReasonCode $planReason -ProcessStatus $processStatus -ProcessReasonCode $processReason
+    } catch { return New-SumiGuardManagedVerificationResult -PlanStatus 'UNVERIFIED_LAUNCH_PLAN' -PlanReasonCode 'VERIFICATION_FAILED' -ProcessStatus 'PROCESS_UNVERIFIED' -ProcessReasonCode 'VERIFICATION_FAILED' }
 }
 Export-ModuleMember -Function @('Test-SumiGuardManagedAssessmentEvidence')
