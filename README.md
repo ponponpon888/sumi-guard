@@ -110,6 +110,8 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 ## セキュリティ境界
 
 - 既定は MONITOR であり、自動 deny や自動遮断を行いません。
+- 強制モード（`ENFORCE_RECORDING`）は別フックの opt-in です。止めるのは「記録できなかった操作」だけで、
+  検知結果による遮断ではありません。入力が読めない場合と内部エラーの場合は通します（fail-open、通知あり）。
 - 同じ Windows ユーザー、管理者、侵害済みセッションからの読取り・改変・削除は防げません。
 - OS 観測はポーリング方式のため、短命プロセスを取り逃す可能性があります。
 - 実データや認証情報を含む Issue を公開しないでください。
@@ -135,7 +137,8 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 
 - 起動後に `write_stdin` で渡される後続標準入力の本文は取得できません。
 - OS観測はポーリング方式であり、短命なプロセスを取り逃す可能性があります。
-- 常駐監視、感染判定、誤検知判定、自動遮断は未実装です。
+- 常駐監視、感染判定、誤検知判定、検知結果による自動遮断は未実装です。記録失敗時の拒否（強制モード）は
+  opt-in で、実測は Claude Code の Bash 1経路だけです。
 - 現在の結果は固定入力による試作検証であり、一般のコマンドや実データに対する完全性を保証しません。
 
 ## 構成
@@ -149,7 +152,10 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `src/SumiGuard.ExecutionAdapter/`: 実行前イベントと暗号化本文を `execution_id` で結ぶ接続モジュール
 - `tests/Invoke-LocalStoreTests.ps1`: ローカル保存モジュールの単体試験
 - `tests/Invoke-ExecutionAdapterIntegrationTests.ps1`: 合成イベントだけを使う接続統合試験
-- `hooks/Invoke-SumiGuardMonitorHook.ps1`: Codex PreToolUse を保存前に評価し、評価結果だけを別保存する運用フック（MONITOR、denyしない）
+- `hooks/Invoke-SumiGuardMonitorHook.ps1`: Codex / Claude Code の PreToolUse を保存前に評価し、評価結果だけを別保存する運用フック（MONITOR、denyしない）
+- `hooks/Invoke-SumiGuardEnforcementHook.ps1`: 記録を確認できない操作だけを deny する opt-in の強制フック（どこにも登録していない）
+- `src/SumiGuard.EnforcementDecision/`、`src/SumiGuard.ClaudeResponse/`、`src/SumiGuard.EnforcementControl/`: 強制モードの判定、Claude Code への deny 応答、運用者の設定・緊急停止・通知
+- `tools/Invoke-SumiGuardGate3OperatorCheck.ps1`、`tools/Invoke-SumiGuardGate4OperatorCheck.ps1`: 運用者の端末で強制モードのゲート3・4を測る道具
 - `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`: Claude Code プロファイル、識別子、origin、経路宣言の合成試験
 - `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`: Codex / Claude 両プロファイルの厳密な UTF-8 stdin 回帰試験
 - `docs/28-claude-code-hook-compatibility.md`: Claude Code 互換性、登録条件、実ホスト接続試験の記録
@@ -175,7 +181,9 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `.github/scripts/Invoke-SumiGuardCiTestSuite.ps1`: DPAPI非依存の試験だけを実行し、除外理由を保持するランナー
 - `docs/25-ci-windows-powershell-check.md`: 継続的検査の範囲、言えないこと、除外した試験と理由
 - `docs/38-managed-process-real-smoke-ci.md`、`docs/39-managed-process-failure-smoke-ci.md`: 固定子プロセスの正常・失敗経路CI試験の条件と限界
-- `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（未実装、既定は MONITOR）
+- `docs/26-enforce-recording-design.md`: 記録失敗時に実行を拒否する強制モードの設計（opt-in の別フックとして実装、Claude Code の1経路で実測。既定は MONITOR）
+- `docs/33`〜`docs/37`: 強制モードの判定・応答・ゲート3・ゲート4の記録
+- `docs/40-managed-process-identity-security-boundary.md`: 管理下プロセスの識別が守れる範囲と守れない範囲
 - `docs/27-core-privacy-review-summary.md`: PR #8/#9/#10の統合レビューとマージ記録。対象SHA、証拠の帰属、戻し方
 - `SECURITY.md`: 脆弱性報告の窓口、対象範囲、秘密情報を含めない報告方法
 - `THREAT_MODEL.md`: 保護対象、境界、脅威ごとの制御・試験・残余リスク
