@@ -423,10 +423,19 @@ try {
             'Assessment save broke the prefix: ' + $afterReplace.status)
         $recordPath = Join-Path $assessmentStore 'assessments.ndjson'
         [byte[]]$recordBytes = [IO.File]::ReadAllBytes($recordPath)
-        $recordText = $utf8.GetString($recordBytes)
-        $tampered = $recordText.Replace('00000000000000000000000000004101', '00000000000000000000000000004109')
-        Assert-Test ($tampered -cne $recordText) 'Tamper step did not change the record.'
-        [IO.File]::WriteAllBytes($recordPath, $utf8.GetBytes($tampered))
+        # Same-length edit inside the first (checkpointed) record: shift the
+        # first lowercase letter by one. No assumption about the record schema.
+        $firstLineEnd = [Array]::IndexOf($recordBytes, [byte]10)
+        $editAt = -1
+        for ($index = 0; $index -lt $firstLineEnd; $index++) {
+            if ($recordBytes[$index] -ge 97 -and $recordBytes[$index] -le 121) {
+                $editAt = $index
+                break
+            }
+        }
+        Assert-Test ($firstLineEnd -gt 0 -and $editAt -ge 0) 'Tamper step found no letter in the first record.'
+        $recordBytes[$editAt] = [byte]($recordBytes[$editAt] + 1)
+        [IO.File]::WriteAllBytes($recordPath, $recordBytes)
         $afterTamper = Test-Checkpoint -StorePath $assessmentStore -Checkpoint $assessmentCheckpoint
         Assert-Test ($afterTamper.status -ceq 'MODIFIED') ('Tampered assessment log gave ' + $afterTamper.status)
         Add-TestResult -Name $currentCase -Evidence ([ordered]@{
