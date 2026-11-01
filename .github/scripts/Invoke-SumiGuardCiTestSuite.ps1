@@ -43,6 +43,7 @@ $includedTests = @(
     [pscustomobject]@{ name = 'Invoke-OsProcessCorrelationSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-CimProcessObserverSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-OsProcessIntegrationSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
+    [pscustomobject]@{ name = 'Invoke-OsProcessVerificationSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-ManagedPowerShellAssessmentDemoTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-MonitorHookStandardInputEncodingTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },
     [pscustomobject]@{ name = 'Invoke-MonitorHookSyntheticTests.ps1'; arguments = @(); needs_empty_demo_data = $false; success_property = 'success' },

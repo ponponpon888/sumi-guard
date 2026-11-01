@@ -37,6 +37,41 @@ function Get-SumiGuardIntegrationResult {
     }
 }
 
+# Phase 4D diagnostic checks: date shape and RELATIVE time windows only.
+# Strings and clock values supplied by callers are not provenance evidence.
+function Get-SumiGuardIntegrationTimeReason {
+    param([AllowNull()]$Evidence, [Parameter(Mandatory = $true)][object[]]$Observations)
+    $values = @(
+        (Get-SumiGuardIntegrationValue $Evidence 'observed_start_time_utc')
+        (Get-SumiGuardIntegrationValue $Observations[0] 'observed_start_time_utc')
+        (Get-SumiGuardIntegrationValue $Observations[1] 'observed_start_time_utc')
+        (Get-SumiGuardIntegrationValue $Observations[0] 'collected_at_utc')
+        (Get-SumiGuardIntegrationValue $Observations[1] 'collected_at_utc')
+    )
+    $pattern = '^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$'
+    $parsed = New-Object 'System.Collections.Generic.List[datetime]'
+    foreach ($value in $values) {
+        if ($value -isnot [string] -or $value -cnotmatch $pattern) {
+            return 'TIMESTAMP_FORMAT_INVALID'
+        }
+        $stamp = [datetime]::MinValue
+        $valid = [datetime]::TryParseExact(
+            $value, "yyyy-MM-ddTHH:mm:ss.fffffff'Z'",
+            [Globalization.CultureInfo]::InvariantCulture,
+            [Globalization.DateTimeStyles]::AdjustToUniversal,
+            [ref]$stamp)
+        if (-not $valid) { return 'TIMESTAMP_FORMAT_INVALID' }
+        [void]$parsed.Add($stamp)
+    }
+    if ($parsed[3] -lt $parsed[0]) { return 'OBSERVATION_BEFORE_PROCESS_START' }
+    if ($parsed[4] -le $parsed[3]) { return 'OBSERVATION_TIME_ORDER_INVALID' }
+    if (($parsed[3] - $parsed[0]).TotalSeconds -gt 5 -or
+        ($parsed[4] - $parsed[3]).TotalSeconds -gt 2) {
+        return 'OBSERVATION_WINDOW_EXCEEDED'
+    }
+    return ''
+}
+
 function Test-SumiGuardIntegrationIdentity {
     param([AllowNull()]$Evidence, [AllowNull()]$First, [AllowNull()]$Second)
     $a = Get-SumiGuardIntegrationValue $Evidence 'observed_pid'
@@ -108,6 +143,10 @@ function Invoke-SumiGuardOsProcessIntegration {
             if ((Get-SumiGuardIntegrationValue $item 'start_time_precision') -cne 'CIM_DATETIME_UNVERIFIED') {
                 return Get-SumiGuardIntegrationResult -Reason 'PRECISION_ESCALATION_REJECTED'
             }
+        }
+        $timeReason = Get-SumiGuardIntegrationTimeReason -Evidence $ProcessEvidence -Observations $observations
+        if (-not [string]::IsNullOrEmpty($timeReason)) {
+            return Get-SumiGuardIntegrationResult -Reason $timeReason
         }
         if (-not (Test-SumiGuardIntegrationIdentity -Evidence $ProcessEvidence -First $observations[0] -Second $observations[1])) {
             return Get-SumiGuardIntegrationResult -Reason 'IDENTITY_DISAGREEMENT'
