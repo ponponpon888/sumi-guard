@@ -127,6 +127,54 @@ Record which cases are synthetic and which are real.
 - No Phase 3 or Phase 4 trust promotion.
 - No automatic activation after installation.
 
+### 10A. Fixed Child Process Contract
+
+- Platform: Windows 11 / Windows PowerShell 5.1.
+- Executable: %SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe
+- Resolve the absolute path before launch.
+- Fixed arguments:
+  -NoLogo -NoProfile -NonInteractive -Command "Start-Sleep -Seconds 15"
+- UseShellExecute must be false.
+- Do not accept arbitrary executable paths, arguments or PIDs.
+- Acquire the owned Process handle promptly after launch.
+- If handle acquisition fails, report failure without a PID reopen.
+- The child is expected to exit naturally after its bounded sleep.
+- Use a bounded 20-second completion check.
+- A timeout is a failure, not successful observation.
+
+### 10B. Handle Ownership Contract
+
+- The managed Process object owns its original handle.
+- Never call CloseHandle on Process.Handle.
+- Duplicate the retained original handle using DuplicateHandle.
+- Use PROCESS_QUERY_LIMITED_INFORMATION (0x1000) for the
+  duplicated measurement handle.
+- Make the duplicate non-inheritable.
+- Use dwOptions=0, not DUPLICATE_SAME_ACCESS.
+- Verify the duplicate refers to the owned process.
+- Run GetProcessId, GetProcessTimes and
+  QueryFullProcessImageNameW on the same duplicate.
+- Never substitute OpenProcess using a PID.
+- Close the duplicated handle exactly once in finally.
+- Dispose the Process wrapper separately.
+- The original handle may carry broader rights;
+  do not describe it as query-limited without verification.
+- Any duplication or native-query failure is fail-closed.
+
+### 10C. Completion and Failure Contract
+
+- Record successful natural completion separately from timeout.
+- Record failures from each native API independently.
+- Never invent missing measurements or success flags.
+- Cleanup may affect only the exact child started by this run.
+- Never use a stale PID as a termination target.
+- If termination is needed, validate the retained process
+  instance and restrict the action to that owned test child.
+- Test cleanup after normal success and injected failures.
+- Do not claim that Dispose terminates the child.
+- Parent-crash orphan prevention is not established.
+- Preserve G0: REVIEW PENDING until explicit approval.
+- No runtime hooks or production trust-state changes.
 ## 11. Acceptance Criteria
 
 A01: All synthetic negative cases fail closed.
