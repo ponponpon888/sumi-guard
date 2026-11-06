@@ -1,6 +1,26 @@
 ﻿# SUMI GUARD Phase 5 - Option A Laboratory Specification
 
 Status: PROPOSED - IMPLEMENTATION NOT AUTHORIZED
+
+Status: PARKED (2026-11-06). G0 is neither approved nor
+rejected; the gate states in section 12 are unchanged.
+
+Reason: SUMI Guard is not the parent of the process that
+runs an AI command. The only way to become that parent is to
+rewrite the command through PreToolUse updatedInput. The
+official documentation says permission rules are evaluated
+against the input the hook returns, not the input Claude
+sent (https://code.claude.com/docs/en/hooks, PreToolUse
+decision control). A rewrite therefore silently disables the
+user's deny rules; this was reported in
+anthropics/claude-code#89448 (Windows, Windows PowerShell
+5.1). This lab would therefore not improve INFERRED_MATCH
+for AI commands.
+
+Resume when: Option B (an independent, authenticated
+observer) becomes feasible.
+
+SUMI Guard does not use updatedInput.
 Date: 2026-11-01
 Base: 364a911122cb7b4a71fe56ab55f780ffa730f7ed
 Revision: 2026-11-06
