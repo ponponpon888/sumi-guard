@@ -103,6 +103,7 @@ The demo uses only fixed benign input and writes under `.demo-data`, which is ex
 ## Security boundaries
 
 - MONITOR is the default; the hook does not automatically deny or block execution.
+- Enforcement (`ENFORCE_RECORDING`) is a separate, opt-in hook. It denies only operations whose recording could not be confirmed; it never blocks on a detection result. Unreadable input and internal errors are allowed through with a notice (fail-open).
 - DPAPI CurrentUser and ACLs do not protect against the same Windows user, administrators, or a compromised user session.
 - Polling-based OS observation may miss short-lived processes.
 - Never put secrets, credentials, or real command bodies in public issues.
