@@ -3,6 +3,26 @@
 Status: PROPOSED - IMPLEMENTATION NOT AUTHORIZED
 Date: 2026-11-01
 Base: 364a911122cb7b4a71fe56ab55f780ffa730f7ed
+Revision: 2026-11-06
+
+Revision summary (2026-11-06, written against master 78ec013).
+Every addition below is a PROPOSAL for G0 review. It does
+not approve G0, start G1, or change any gate in section 12.
+- section 9: CIM comparison added as the last real Windows case,
+  left UNDECIDED between Option A and Option B
+  (recommendation: Option A).
+- section 9: G1 items added - synthetic V08, V18, V19; one
+  verification method each for A06-A09; the limit of the
+  section 10B duplicate-handle check.
+- section 10C: termination only through the retained original
+  Process object; the measurement duplicate gets no
+  termination right.
+- section 10D (new): output record fields, constant
+  provenance_level, standard output only.
+- section 10E (new): explicit opt-in execution, CI decision at G1,
+  timeout margin and elapsed-time recording.
+- New file docs/phase5-g0-approval-template-20261106.md:
+  an empty approval record template (NOT APPROVED).
 
 ## 1. Objective
 
@@ -108,8 +128,50 @@ Real Windows cases:
 - process exit during observation
 - API error recording
 - handle cleanup
+- CIM comparison (UNDECIDED - see below)
 
 Record which cases are synthetic and which are real.
+
+CIM comparison - UNDECIDED (proposal, 2026-11-06).
+ADR section 7 lists "Measure differences against CIM observations"
+and threat model V09 covers a CIM CreationDate that differs
+from the handle-bound creation time. Whether G1 includes it
+stays open until the operator decides:
+
+- Option A: include it as the last real Windows case.
+  The only PID used is the value read through the retained
+  handle (GetProcessId on the section 10B duplicate). The CIM query
+  is read-only and its result is for comparison only; it
+  never feeds a trust, match or provenance decision.
+  If Option A is chosen, section 2 "Never substitute a later
+  PID-based lookup" gets one stated exception, limited to
+  this single comparison case: a read-only CIM lookup by
+  that handle-derived PID, used only to compare values.
+- Option B: leave it out of G1 and carry it to G2.
+
+Recommended: Option A. Not decided; the operator decides.
+
+G1 items to fill (proposal, 2026-11-06):
+- Add synthetic cases for threat model V08 (executable path
+  differs from expected image), V18 (observer crashes during
+  capture) and V19 (evidence truncated or partially written).
+- A06: run the real cases from a non-elevated session,
+  record the elevation state, and confirm no code path
+  enables a privilege.
+- A07: confirm by review that the only handle source is the
+  retained Process object and that no OpenProcess call or
+  PID input exists.
+- A08 (regression): tests/Invoke-OsProcessIntegrationSyntheticTests.ps1
+  and tests/Invoke-OsProcessVerificationSyntheticTests.ps1
+  still pass unchanged and still assert UNMATCHED.
+- A09 (regression): tests/Invoke-OsProcessCorrelationSyntheticTests.ps1
+  cases PUBLIC_API_CANNOT_ENABLE_DIRECT_MATCH and
+  PRODUCTION_DIRECT_MATCH_DISABLED still pass unchanged.
+- Limit of section 10B "Verify the duplicate refers to the owned
+  process": it compares GetProcessId on the duplicate with
+  Process.Id of the same retained object, so it is a
+  consistency check inside the lab process, not an
+  independent confirmation.
 
 ## 10. Strict Implementation Boundaries
 
@@ -170,11 +232,69 @@ Record which cases are synthetic and which are real.
 - Never use a stale PID as a termination target.
 - If termination is needed, validate the retained process
   instance and restrict the action to that owned test child.
+- Proposal (2026-11-06): termination, when needed, goes only
+  through the retained original Process object. It is never
+  done through the duplicated measurement handle
+  (PROCESS_QUERY_LIMITED_INFORMATION), and the duplicate is
+  never given a termination right.
 - Test cleanup after normal success and injected failures.
 - Do not claim that Dispose terminates the child.
 - Parent-crash orphan prevention is not established.
 - Preserve G0: REVIEW PENDING until explicit approval.
 - No runtime hooks or production trust-state changes.
+
+### 10D. Output Record (proposal, 2026-11-06)
+
+Fields this lab can emit, chosen from threat model section 5:
+- schema_version
+- execution_id (the lab run identifier)
+- pid_from_handle
+- creation_filetime_utc
+- executable_path_from_handle
+- handle_acquisition_status
+- collection_started_utc
+- collection_completed_utc
+- collector_version
+- collection_status
+- failure_reason
+- win32_error_code
+- provenance_level
+
+Not emitted: collector_instance_id and observation_nonce.
+Option A has no independent collector and no replay
+protection (section 7), so these values would suggest an
+authentication the lab does not have.
+
+provenance_level is a constant written by the lab code path.
+It is never built from input, arguments or another field.
+It describes the collection method only; whether the
+measurement succeeded is read from collection_status.
+
+The level is ADR section 6 L2 at most. L2 is not resistance to
+tampering within the same process.
+
+Output goes to standard output only. The lab writes to no
+store, registers no hook and saves no file. The operator may
+redirect standard output.
+
+### 10E. Execution Environment (proposal, 2026-11-06)
+
+- Real Windows cases run only behind an explicit opt-in
+  switch. They are not part of the default CI test suite.
+- Whether to add them as a CI job is decided at G1, after
+  the local results are reviewed.
+- The CI suite runner fails on a test file that is in
+  neither its included nor its excluded list, so a real-case
+  test script must be added to the excluded list with the
+  reason.
+- The 20-second completion check against the 15-second
+  child sleep leaves a small margin.
+- A timeout is a failure. Record the elapsed time of every
+  real case.
+- On a slow or heavily loaded machine, a timeout may be a
+  false failure rather than a defect. Results must say so
+  when a timeout occurs.
+
 ## 11. Acceptance Criteria
 
 A01: All synthetic negative cases fail closed.
