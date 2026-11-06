@@ -31,8 +31,11 @@ measurement records that back its claims; a claim without a record is not made.
   in docs/28; `-Action Uninstall` removes only that entry. Everything else in
   the file is checked to be unchanged before writing, a second Install is a
   no-op, a changed file is backed up beside itself, written through a
-  temporary file and read back. `-WhatIf` writes nothing. Never registers the
-  enforcement hook and never deletes a store.
+  temporary file and read back. `-WhatIf` writes nothing. Registers the
+  MONITOR hook only, never the enforcement hook, and never deletes a store.
+  Runs only when the operator invokes it with the required `-Action` and
+  `-SettingsPath` (no default settings file); no hook, demo or other tool
+  calls it, only its own test.
   ([docs/42](docs/42-claude-monitor-hook-setup.md))
 - **CI**: `tests/Invoke-ClaudeMonitorHookSetupTests.ps1` (synthetic settings
   and stand-in stores, DPAPI-independent).

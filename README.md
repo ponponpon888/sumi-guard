@@ -112,6 +112,11 @@ powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass `
 - 既定は MONITOR であり、自動 deny や自動遮断を行いません。
 - 強制モード（`ENFORCE_RECORDING`）は別フックの opt-in です。止めるのは「記録できなかった操作」だけで、
   検知結果による遮断ではありません。入力が読めない場合と内部エラーの場合は通します（fail-open、通知あり）。
+- MONITOR フックの登録・解除（`tools/Invoke-SumiGuardClaudeMonitorHookSetup.ps1`）は、運用者が必須引数
+  （`-Action`、`-SettingsPath`）を付けて実行したときだけ行います。登録するのは MONITOR フックだけで、
+  強制フックは登録しません。解除してもストアと記録は消しません。
+- 記録の改ざん検知（`tools/Invoke-SumiGuardLogCheckpoint.ps1`）は鍵のないハッシュです。チェックポイントを
+  記録の書き手が変えられない場所に保管したときだけ意味があり、署名や改ざん不能な保管の代わりにはなりません。
 - 同じ Windows ユーザー、管理者、侵害済みセッションからの読取り・改変・削除は防げません。
 - OS 観測はポーリング方式のため、短命プロセスを取り逃す可能性があります。
 - 実データや認証情報を含む Issue を公開しないでください。
@@ -156,6 +161,12 @@ Windows PowerShell 5.1 へのフック到達、厳密な UTF-8 復号、Executio
 - `hooks/Invoke-SumiGuardEnforcementHook.ps1`: 記録を確認できない操作だけを deny する opt-in の強制フック（どこにも登録していない）
 - `src/SumiGuard.EnforcementDecision/`、`src/SumiGuard.ClaudeResponse/`、`src/SumiGuard.EnforcementControl/`: 強制モードの判定、Claude Code への deny 応答、運用者の設定・緊急停止・通知
 - `tools/Invoke-SumiGuardGate3OperatorCheck.ps1`、`tools/Invoke-SumiGuardGate4OperatorCheck.ps1`: 運用者の端末で強制モードのゲート3・4を測る道具
+- `src/SumiGuard.HookSetup/`、`tools/Invoke-SumiGuardClaudeMonitorHookSetup.ps1`: Claude Code の設定ファイル1つに MONITOR フックを登録・解除する運用者向けの道具。登録するのは MONITOR フックだけで、強制フックは登録しない。運用者が必須引数（`-Action`、`-SettingsPath`）を付けて実行したときだけ動く
+- `tests/Invoke-ClaudeMonitorHookSetupTests.ps1`: 合成の設定ファイルと代替ストアで登録・解除を確かめる CI 試験
+- `docs/42-claude-monitor-hook-setup.md`: MONITOR フックの登録・解除の使い方、守ること、既知の制約
+- `src/SumiGuard.LogIntegrity/`、`tools/Invoke-SumiGuardLogCheckpoint.ps1`: NDJSON 記録の先頭チェックポイント（素の SHA-256）を作り、後から書き換え・切り詰めがないかを照合する読み取り専用の道具。チェックポイントはストアの外に保管する
+- `tests/Invoke-LogIntegrityTests.ps1`: 合成データで改ざん検知を確かめる CI 試験
+- `docs/41-log-integrity-checkpoint.md`: 記録の改ざん検知で分かること・分からないこと
 - `tests/Invoke-ClaudeMonitorHookProfileSyntheticTests.ps1`: Claude Code プロファイル、識別子、origin、経路宣言の合成試験
 - `tests/Invoke-MonitorHookStandardInputEncodingTests.ps1`: Codex / Claude 両プロファイルの厳密な UTF-8 stdin 回帰試験
 - `docs/28-claude-code-hook-compatibility.md`: Claude Code 互換性、登録条件、実ホスト接続試験の記録
