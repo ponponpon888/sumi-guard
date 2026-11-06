@@ -7,6 +7,15 @@ measurement records that back its claims; a claim without a record is not made.
 
 ### Added
 
+- **Log integrity checkpoints** (`SumiGuard.LogIntegrity`,
+  `tools/Invoke-SumiGuardLogCheckpoint.ps1`): the plain SHA-256 of an NDJSON
+  log up to its last complete line, and a check that the log still starts with
+  those bytes (`INTACT` / `MODIFIED` / `TRUNCATED`). Covers events,
+  failures, retention and assessments. Read-only, takes no store lock, returns no
+  content or path. Unkeyed: it shows tampering only when the checkpoint is kept
+  outside the store, and the tool refuses to write it inside.
+  ([docs/41](docs/41-log-integrity-checkpoint.md))
+- **CI**: `tests/Invoke-LogIntegrityTests.ps1` (synthetic, DPAPI-independent).
 - **Enforcement demo** `demo/Start-SumiGuardEnforcementDemo.ps1`: six scenes
   (off, recorded, denied, unlisted tool, kill switch, kill switch removed)
   against the real enforcement hook, fed through standard input without
