@@ -610,6 +610,15 @@ function Invoke-SumiGuardTestProcess {
     $script:LastObservedChildIds = @()
     $script:LastReapResult = $null
     $script:LastReapFailed = $false
+    # Write progress, readable by a snapshot provider. PENDING is set only after
+    # a bounded wait on the write has returned without completion.
+    $script:LastStdinWrite = [pscustomobject][ordered]@{
+        state = 'NOT_STARTED'
+        pending_observed = $false
+        exception_type = $null
+        inner_exception_type = $null
+        inner_hresult = $null
+    }
     try {
         $savedConsoleInputEncoding = $null
         $consoleInputEncodingNeutralized = $false
@@ -690,9 +699,12 @@ function Invoke-SumiGuardTestProcess {
                 # the child.
                 $write = $standardInput.BaseStream.BeginWrite(
                     $StandardInputBytes, 0, $StandardInputBytes.Length, $null, $null)
+                $script:LastStdinWrite.state = 'STARTED'
                 $writeWaitHandle = $write.AsyncWaitHandle
                 $writeDeadline = [DateTime]::UtcNow.AddMilliseconds($ShutdownTimeoutMilliseconds)
                 while (-not $writeWaitHandle.WaitOne(100)) {
+                    $script:LastStdinWrite.state = 'PENDING'
+                    $script:LastStdinWrite.pending_observed = $true
                     # The input pipe can be full while the child creates its
                     # own PowerShell child. Keep pinning during that interval.
                     . $collectSnapshot
@@ -702,6 +714,23 @@ function Invoke-SumiGuardTestProcess {
                 }
                 $standardInput.BaseStream.EndWrite($write)
                 $standardInput.BaseStream.Flush()
+                $script:LastStdinWrite.state = 'COMPLETED'
+            }
+            catch {
+                # Record type information only, then rethrow the original
+                # exception. A failure of this record never replaces it.
+                try {
+                    $script:LastStdinWrite.state = 'FAILED'
+                    $script:LastStdinWrite.exception_type = $_.Exception.GetType().FullName
+                    if ($null -ne $_.Exception.InnerException) {
+                        $script:LastStdinWrite.inner_exception_type = $_.Exception.InnerException.GetType().FullName
+                        $script:LastStdinWrite.inner_hresult = ('0x{0:X8}' -f $_.Exception.InnerException.HResult)
+                    }
+                }
+                catch {
+                    Write-Verbose 'Standard input write diagnostic could not be recorded.'
+                }
+                throw
             }
             finally {
                 if ($null -ne $writeWaitHandle) {
@@ -1364,43 +1393,170 @@ try {
     # The pending pipe write must keep collecting descendants; the child seen
     # with a pinned handle must still reach the finally reap when EndWrite
     # observes the broken pipe.
+    # The root exits only after release, and release is given only from a
+    # snapshot taken while the write is observed pending (Issue #41). With a
+    # fixed sleep, the first child snapshot before the write could outlast the
+    # root on a slow CIM host; a write started after the reader had exited
+    # returned success, so the case failed there and passed on fast hosts.
     try {
         $script:stage = 'assert/input-send-early-root-exit-control'
-        $escapedPowerShell = $powerShell51.Replace("'", "''")
-        $earlyExitText = '$null = Start-Process -FilePath ''' + $escapedPowerShell +
-            ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""''; Start-Sleep -Milliseconds 1000'
-        $earlyExitEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($earlyExitText))
         [byte[]]$fixedInput = New-Object byte[] 1048576
         $script:LastObservedChildIds = @()
         $script:LastReapResult = $null
         $script:LastReapFailed = $false
+        $script:LastStdinWrite = $null
         $sendCaught = $false
+        $pendingFixture = [pscustomobject][ordered]@{
+            events_created = $false
+            pinned_seen_count = 0
+            released = $false
+            release_write_state = $null
+            root_process = $null
+            root_exited = $null
+            root_exit_code = $null
+            root_release_acknowledged = $false
+            provider_error_type = $null
+            setup_error_type = $null
+            cleanup_error_type = $null
+        }
+        $pendingId = [Guid]::NewGuid().ToString('N')
+        $pendingReleaseName = 'Local\SumiGuardPendingInputRelease_' + $pendingId
+        $pendingAckName = 'Local\SumiGuardPendingInputAck_' + $pendingId
+        $pendingRelease = $null
+        $pendingAck = $null
+        $pendingRootEncoded = $null
+        # Root exit codes: 0 released and acknowledged; 13 child start failed;
+        # 14 events unavailable; 15 release wait timed out.
         try {
-            $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
-                -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $earlyExitEncoded) `
-                -TimeoutMilliseconds 5000 -ShutdownTimeoutMilliseconds 3000 `
-                -SendStandardInput -StandardInputBytes $fixedInput
+            $releaseCreated = $false
+            $ackCreated = $false
+            $pendingRelease = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $pendingReleaseName, [ref]$releaseCreated)
+            $pendingAck = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $pendingAckName, [ref]$ackCreated)
+            $pendingFixture.events_created = ($releaseCreated -and $ackCreated)
+            $escapedPowerShell = $powerShell51.Replace("'", "''")
+            $pendingRootText = @(
+                'try { $release = [System.Threading.EventWaitHandle]::OpenExisting(''' + $pendingReleaseName + '''); $ack = [System.Threading.EventWaitHandle]::OpenExisting(''' + $pendingAckName + ''') } catch { exit 14 }'
+                'try { $null = Start-Process -FilePath ''' + $escapedPowerShell + ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""'' -ErrorAction Stop } catch { exit 13 }'
+                'if (-not $release.WaitOne(10000)) { exit 15 }'
+                '[void]$ack.Set()'
+                'exit 0'
+            ) -join "`n"
+            $pendingRootEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pendingRootText))
         }
         catch {
-            $sendCaught = $true
+            $pendingFixture.setup_error_type = $_.Exception.GetType().FullName
         }
-        $script:childStartCount++
+
+        # The root is alive when release is given and its Process object is
+        # held by the helper, so its pid cannot name another process; the
+        # handle opened here only reads the exit state.
+        $pendingSnapshotProvider = {
+            param($parentId)
+            $snapshot = Get-ChildProcessSnapshot -ParentId $parentId
+            try {
+                if ($null -ne $snapshot) {
+                    $itemCount = @($snapshot.items).Count
+                    if ($itemCount -gt $pendingFixture.pinned_seen_count) { $pendingFixture.pinned_seen_count = $itemCount }
+                }
+                $writeState = if ($null -ne $script:LastStdinWrite) { [string]$script:LastStdinWrite.state } else { $null }
+                if ((-not $pendingFixture.released) -and ($pendingFixture.pinned_seen_count -ge 1) -and ($writeState -ceq 'PENDING')) {
+                    $pendingFixture.root_process = [System.Diagnostics.Process]::GetProcessById([int]$parentId)
+                    $pendingFixture.release_write_state = $writeState
+                    $pendingFixture.released = [bool]$pendingRelease.Set()
+                }
+            }
+            catch {
+                if ($null -eq $pendingFixture.provider_error_type) { $pendingFixture.provider_error_type = $_.Exception.GetType().FullName }
+            }
+            return $snapshot
+        }
+
+        try {
+            if ($pendingFixture.events_created -and $null -ne $pendingRootEncoded) {
+                try {
+                    # The write deadline is the shutdown timeout. It covers one
+                    # CIM snapshot while pending plus the root's exit.
+                    $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+                        -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $pendingRootEncoded) `
+                        -TimeoutMilliseconds 20000 -ShutdownTimeoutMilliseconds 10000 `
+                        -SendStandardInput -StandardInputBytes $fixedInput `
+                        -SnapshotProvider $pendingSnapshotProvider
+                }
+                catch {
+                    $sendCaught = $true
+                }
+                $script:childStartCount++
+            }
+        }
+        finally {
+            try {
+                if ($null -ne $pendingAck) { $pendingFixture.root_release_acknowledged = [bool]$pendingAck.WaitOne(0) }
+                if ($null -ne $pendingFixture.root_process) {
+                    $pendingFixture.root_exited = [bool]$pendingFixture.root_process.WaitForExit(5000)
+                    if ($pendingFixture.root_exited) { $pendingFixture.root_exit_code = [int]$pendingFixture.root_process.ExitCode }
+                }
+            }
+            catch {
+                if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName }
+            }
+            # A root still waiting is released so it ends on its own path.
+            try { if ($null -ne $pendingRelease -and -not $pendingFixture.released) { [void]$pendingRelease.Set() } }
+            catch { if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName } }
+            foreach ($pendingDisposable in @($pendingFixture.root_process, $pendingRelease, $pendingAck)) {
+                if ($null -ne $pendingDisposable) {
+                    try { $pendingDisposable.Dispose() }
+                    catch { if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName } }
+                }
+            }
+        }
+
         $recordedIds = @($script:LastObservedChildIds)
         $reapResult = $script:LastReapResult
+        $pendingWrite = $script:LastStdinWrite
         $confirmation = Test-RecordedChildGone -ProcessId $recordedIds -ReadByProcessId {
             param($id)
             @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop |
                 Where-Object { [string]$_.Name -like 'powershell*' })
         } -TimeoutMilliseconds 10000
+        $pendingOrderHeld = $pendingFixture.events_created -and $pendingFixture.released -and
+            ($pendingFixture.release_write_state -ceq 'PENDING') -and
+            ($null -eq $pendingFixture.provider_error_type) -and ($null -eq $pendingFixture.setup_error_type)
+        # A write timeout is not the early root exit this case is about.
+        $pendingSendFailedAtPipe = $sendCaught -and ($null -ne $pendingWrite) -and
+            ($pendingWrite.state -ceq 'FAILED') -and [bool]$pendingWrite.pending_observed -and
+            ($pendingWrite.exception_type -cne 'System.TimeoutException') -and
+            ($pendingWrite.inner_exception_type -ceq 'System.IO.IOException')
+        $pendingRootEnded = ($pendingFixture.root_exited -eq $true) -and ($pendingFixture.root_exit_code -eq 0) -and
+            [bool]$pendingFixture.root_release_acknowledged
         $script:stage = 'add/PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD'
         Add-Result 'PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD' (
-            $sendCaught -and $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
+            $pendingOrderHeld -and $pendingSendFailedAtPipe -and $pendingRootEnded -and
+            $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
             [int]$reapResult.terminated -ge 1 -and [bool]$reapResult.gone -and
             [bool]$reapResult.verified -and (-not [bool]$script:LastReapFailed) -and
             [bool]$confirmation.verified -and [bool]$confirmation.gone) -Observed @{
-                send_failed = $sendCaught; recorded_children = $recordedIds.Count
+                events_created = [bool]$pendingFixture.events_created
+                setup_error_type = $pendingFixture.setup_error_type
+                provider_error_type = $pendingFixture.provider_error_type
+                cleanup_error_type = $pendingFixture.cleanup_error_type
+                released = [bool]$pendingFixture.released
+                release_write_state = $pendingFixture.release_write_state
+                write_state = $(if ($null -eq $pendingWrite) { $null } else { [string]$pendingWrite.state })
+                write_pending_observed = $(if ($null -eq $pendingWrite) { $false } else { [bool]$pendingWrite.pending_observed })
+                write_exception_type = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.exception_type })
+                write_inner_exception_type = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.inner_exception_type })
+                write_inner_hresult = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.inner_hresult })
+                send_failed = $sendCaught
+                root_exited = $pendingFixture.root_exited
+                root_exit_code = $pendingFixture.root_exit_code
+                root_release_acknowledged = [bool]$pendingFixture.root_release_acknowledged
+                recorded_children = $recordedIds.Count
+                reap_terminated = $(if ($null -eq $reapResult) { $null } else { [int]$reapResult.terminated })
+                reap_gone = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.gone })
                 reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
+                last_reap_failed = [bool]$script:LastReapFailed
                 confirmation_verified = [bool]$confirmation.verified
+                confirmation_gone = [bool]$confirmation.gone
             }
     }
     catch {

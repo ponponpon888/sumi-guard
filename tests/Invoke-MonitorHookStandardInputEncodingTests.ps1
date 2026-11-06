@@ -490,6 +490,20 @@ function Invoke-SumiGuardTestProcess {
     $script:LastObservedChildIds = @()
     $script:LastReapResult = $null
     $script:LastReapFailed = $false
+    # Write progress, readable by a snapshot provider. PENDING is set only after
+    # a bounded wait on the write has returned without completion.
+    $script:LastStdinWrite = [pscustomobject][ordered]@{
+        state = 'NOT_STARTED'
+        pending_observed = $false
+        wait_iterations = 0
+        state_before_failure = $null
+        exception_type = $null
+        inner_exception_type = $null
+        inner_hresult = $null
+        diagnostic_error_type = $null
+    }
+    # Last launch stage reached, readable by the caller after an exception.
+    $script:LastTestProcessStage = 'INITIALIZING'
     try {
         $savedConsoleInputEncoding = $null
         $consoleInputEncodingNeutralized = $false
@@ -506,6 +520,7 @@ function Invoke-SumiGuardTestProcess {
             }
         }
         try {
+            $script:LastTestProcessStage = 'BEFORE_START'
             if (-not $process.Start()) {
                 throw [System.InvalidOperationException]::new('test child process did not start')
             }
@@ -517,9 +532,12 @@ function Invoke-SumiGuardTestProcess {
             }
         }
         $processStarted = $true
+        $script:LastTestProcessStage = 'STARTED'
         # Both reads start before any wait so a full pipe cannot block the child.
         $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $script:LastTestProcessStage = 'STDOUT_READ_STARTED'
         $stderrTask = $process.StandardError.ReadToEndAsync()
+        $script:LastTestProcessStage = 'STDERR_READ_STARTED'
         if ($null -eq $SnapshotProvider) {
             $SnapshotProvider = { param($parentId) Get-ChildProcessSnapshot -ParentId $parentId }
         }
@@ -553,11 +571,17 @@ function Invoke-SumiGuardTestProcess {
                 # Send the exact bytes from stdin.bin. No StreamWriter text
                 # API is used after the guard, so neither decoding nor a
                 # preamble can change this payload.
+                $script:LastTestProcessStage = 'BEFORE_WRITE'
                 $write = $standardInput.BaseStream.BeginWrite(
                     $StandardInputBytes, 0, $StandardInputBytes.Length, $null, $null)
+                $script:LastTestProcessStage = 'WRITE_STARTED'
+                $script:LastStdinWrite.state = 'STARTED'
                 $writeWaitHandle = $write.AsyncWaitHandle
                 $writeDeadline = [DateTime]::UtcNow.AddMilliseconds($ShutdownTimeoutMilliseconds)
                 while (-not $writeWaitHandle.WaitOne(100)) {
+                    $script:LastStdinWrite.state = 'PENDING'
+                    $script:LastStdinWrite.pending_observed = $true
+                    $script:LastStdinWrite.wait_iterations = $script:LastStdinWrite.wait_iterations + 1
                     . $collectSnapshot
                     if ([DateTime]::UtcNow -ge $writeDeadline) {
                         throw [System.TimeoutException]::new('standard input write timed out')
@@ -565,6 +589,27 @@ function Invoke-SumiGuardTestProcess {
                 }
                 $standardInput.BaseStream.EndWrite($write)
                 $standardInput.BaseStream.Flush()
+                $script:LastStdinWrite.state = 'COMPLETED'
+            }
+            catch {
+                # Record type information only, then rethrow the original
+                # exception. A failure of this record never replaces it.
+                try {
+                    $script:LastStdinWrite.state_before_failure = $script:LastStdinWrite.state
+                    $script:LastStdinWrite.state = 'FAILED'
+                    $writeException = $_.Exception
+                    $script:LastStdinWrite.exception_type = $writeException.GetType().FullName
+                    if ($null -ne $writeException.InnerException) {
+                        $script:LastStdinWrite.inner_exception_type = $writeException.InnerException.GetType().FullName
+                        $script:LastStdinWrite.inner_hresult = ('0x{0:X8}' -f $writeException.InnerException.HResult)
+                    }
+                }
+                catch {
+                    try { $script:LastStdinWrite.diagnostic_error_type = $_.Exception.GetType().FullName } catch {
+                        Write-Verbose 'Standard input write diagnostic could not be recorded.'
+                    }
+                }
+                throw
             }
             finally {
                 if ($null -ne $writeWaitHandle) {
@@ -1254,46 +1299,272 @@ try {
         }
     }
 
-    # Keep observing while a fixed input is pending. The root starts a sleeping
-    # child without reading stdin, then exits; the pinned child must be reaped
-    # even though the input write fails at the broken pipe.
+    # Keep observing while a fixed input is pending, sequenced by events rather
+    # than by time:
+    # 1. A Windows PowerShell root opens two named events, starts one sleeping
+    #    PowerShell child with Start-Process, never reads its standard input,
+    #    then waits for release.
+    # 2. The snapshot provider pins the child.
+    # 3. Release is given only from a snapshot taken while the input write is
+    #    observed pending.
+    # 4. The root exits while the write is pending, so the write must fail at
+    #    the pipe, not by the write timeout.
+    # 5. The helper's finally reaps the pinned child.
+    # Why events and not a fixed sleep (Issue #41): the first child snapshot
+    # runs before the write, and a CIM query can outlast a short-lived root.
+    # A write that starts after the reader has already exited returned success
+    # in that measurement, so the case passed on fast CIM hosts and failed on
+    # slow ones. An executable compiled by the test was also tried as the root
+    # and was refused by the host's malware protection, so the root is plain
+    # Windows PowerShell.
     try {
         $script:stage = 'assert/input-send-early-root-exit-control'
-        $escapedPowerShell = $powerShell51.Replace("'", "''")
-        $earlyExitText = '$null = Start-Process -FilePath ''' + $escapedPowerShell +
-            ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""''; Start-Sleep -Milliseconds 1000'
-        $earlyExitEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($earlyExitText))
         [byte[]]$fixedInput = New-Object byte[] 1048576
         $script:LastObservedChildIds = @()
         $script:LastReapResult = $null
         $script:LastReapFailed = $false
+        $script:LastStdinWrite = $null
         $sendCaught = $false
+        $sendExceptionType = $null
+        $pendingFixture = [pscustomobject][ordered]@{
+            root_command_ready = $false
+            events_created = $false
+            pinned_seen_count = 0
+            released = $false
+            child_pinned_at_release = $false
+            pinned_count_at_release = 0
+            release_write_state = $null
+            root_handle_opened = $false
+            root_process = $null
+            root_exited = $null
+            root_exit_code = $null
+            root_release_acknowledged = $false
+            provider_error_type = $null
+            setup_error_type = $null
+            cleanup_error_type = $null
+        }
+        $script:LastTestProcessStage = $null
+        $pendingLaunch = [pscustomobject][ordered]@{
+            stage_at_failure = $null
+            fqid = $null
+            exception_hresult = $null
+            inner_exception_type = $null
+            inner_hresult = $null
+            win32_native_error_code = $null
+            exception_chain = $null
+            message_redacted = $null
+            diagnostic_error_type = $null
+        }
+        $pendingId = [Guid]::NewGuid().ToString('N')
+        $pendingReleaseName = 'Local\SumiGuardPendingInputRelease_' + $pendingId
+        $pendingAckName = 'Local\SumiGuardPendingInputAck_' + $pendingId
+        $pendingRelease = $null
+        $pendingAck = $null
+        $pendingRootEncoded = $null
+        # Root exit codes: 0 released and acknowledged; 13 child start failed;
+        # 14 events unavailable; 15 release wait timed out.
         try {
-            $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
-                -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $earlyExitEncoded) `
-                -TimeoutMilliseconds 5000 -ShutdownTimeoutMilliseconds 3000 `
-                -SendStandardInput -StandardInputBytes $fixedInput
+            $releaseCreated = $false
+            $ackCreated = $false
+            $pendingRelease = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $pendingReleaseName, [ref]$releaseCreated)
+            $pendingAck = [System.Threading.EventWaitHandle]::new($false, [System.Threading.EventResetMode]::ManualReset, $pendingAckName, [ref]$ackCreated)
+            $pendingFixture.events_created = ($releaseCreated -and $ackCreated)
+
+            # The root never reads standard input and exits only after release.
+            $escapedPendingPowerShell = $powerShell51.Replace("'", "''")
+            $pendingRootText = @(
+                'try { $release = [System.Threading.EventWaitHandle]::OpenExisting(''' + $pendingReleaseName + '''); $ack = [System.Threading.EventWaitHandle]::OpenExisting(''' + $pendingAckName + ''') } catch { exit 14 }'
+                'try { $null = Start-Process -FilePath ''' + $escapedPendingPowerShell + ''' -ArgumentList ''-NoProfile -NonInteractive -Command ""Start-Sleep -Seconds 120""'' -ErrorAction Stop } catch { exit 13 }'
+                'if (-not $release.WaitOne(10000)) { exit 15 }'
+                '[void]$ack.Set()'
+                'exit 0'
+            ) -join "`n"
+            $pendingRootEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($pendingRootText))
+            $pendingFixture.root_command_ready = $true
         }
         catch {
-            $sendCaught = $true
+            $pendingFixture.setup_error_type = $_.Exception.GetType().FullName
         }
-        $script:childStartCount++
+
+        # Release only after a child is pinned and while the write is pending.
+        # The root is alive at that moment and its Process object is held by
+        # the helper, so its pid cannot name another process; the handle opened
+        # here is used to read the exit state only, never to stop anything.
+        $pendingSnapshotProvider = {
+            param($parentId)
+            $snapshot = Get-ChildProcessSnapshot -ParentId $parentId
+            try {
+                if ($null -ne $snapshot) {
+                    $itemCount = @($snapshot.items).Count
+                    if ($itemCount -gt $pendingFixture.pinned_seen_count) { $pendingFixture.pinned_seen_count = $itemCount }
+                }
+                $writeState = if ($null -ne $script:LastStdinWrite) { [string]$script:LastStdinWrite.state } else { $null }
+                if ((-not $pendingFixture.released) -and ($pendingFixture.pinned_seen_count -ge 1) -and ($writeState -ceq 'PENDING')) {
+                    $pendingFixture.root_process = [System.Diagnostics.Process]::GetProcessById([int]$parentId)
+                    $pendingFixture.root_handle_opened = $true
+                    $pendingFixture.child_pinned_at_release = $true
+                    $pendingFixture.pinned_count_at_release = $pendingFixture.pinned_seen_count
+                    $pendingFixture.release_write_state = $writeState
+                    $pendingFixture.released = [bool]$pendingRelease.Set()
+                }
+            }
+            catch {
+                if ($null -eq $pendingFixture.provider_error_type) { $pendingFixture.provider_error_type = $_.Exception.GetType().FullName }
+            }
+            return $snapshot
+        }
+
+        try {
+            if ($pendingFixture.root_command_ready -and $pendingFixture.events_created) {
+                try {
+                    # The write deadline is the shutdown timeout. It covers one
+                    # CIM snapshot while pending plus the root's exit, so it is
+                    # longer than for the other cases.
+                    $null = Invoke-SumiGuardTestProcess -FileName $powerShell51 `
+                        -Arguments ('-NoProfile -NonInteractive -EncodedCommand ' + $pendingRootEncoded) `
+                        -TimeoutMilliseconds 20000 -ShutdownTimeoutMilliseconds 10000 `
+                        -SendStandardInput -StandardInputBytes $fixedInput `
+                        -SnapshotProvider $pendingSnapshotProvider
+                }
+                catch {
+                    # Keep the original ErrorRecord first; the record below is
+                    # type, code, and redacted text only and never replaces it.
+                    $sendRecord = $_
+                    $sendCaught = $true
+                    $pendingLaunch.stage_at_failure = [string]$script:LastTestProcessStage
+                    try {
+                        $sendExceptionType = $sendRecord.Exception.GetType().FullName
+                        $pendingLaunch.fqid = [string]$sendRecord.FullyQualifiedErrorId
+                        $pendingLaunch.exception_hresult = ('0x{0:X8}' -f $sendRecord.Exception.HResult)
+                        $launchChain = New-Object System.Collections.Generic.List[string]
+                        $launchLevel = $sendRecord.Exception
+                        $launchDepth = 0
+                        while ($null -ne $launchLevel -and $launchDepth -lt 4) {
+                            $launchEntry = $launchLevel.GetType().FullName + '|' + ('0x{0:X8}' -f $launchLevel.HResult)
+                            if ($launchLevel -is [System.ComponentModel.Win32Exception]) {
+                                $launchEntry = $launchEntry + '|native=' + [string]$launchLevel.NativeErrorCode
+                                if ($null -eq $pendingLaunch.win32_native_error_code) { $pendingLaunch.win32_native_error_code = [int]$launchLevel.NativeErrorCode }
+                            }
+                            $launchChain.Add($launchEntry)
+                            $launchLevel = $launchLevel.InnerException
+                            $launchDepth++
+                        }
+                        $pendingLaunch.exception_chain = ($launchChain -join ' > ')
+                        if ($null -ne $sendRecord.Exception.InnerException) {
+                            $pendingLaunch.inner_exception_type = $sendRecord.Exception.InnerException.GetType().FullName
+                            $pendingLaunch.inner_hresult = ('0x{0:X8}' -f $sendRecord.Exception.InnerException.HResult)
+                            $launchMessage = [string]$sendRecord.Exception.InnerException.Message
+                        }
+                        else {
+                            $launchMessage = [string]$sendRecord.Exception.Message
+                        }
+                        # Local paths and the account name are removed from the text.
+                        $launchMessage = [regex]::Replace($launchMessage, '(?i)\b[A-Z]:\\[^\r\n"'']*', '[path]')
+                        $launchMessage = [regex]::Replace($launchMessage, '\\\\[^\r\n"'']+', '[path]')
+                        if (-not [string]::IsNullOrEmpty($env:USERNAME)) { $launchMessage = $launchMessage.Replace($env:USERNAME, '[user]') }
+                        $pendingLaunch.message_redacted = $launchMessage
+                    }
+                    catch {
+                        try { $pendingLaunch.diagnostic_error_type = $_.Exception.GetType().FullName } catch {
+                            Write-Verbose 'Launch diagnostic could not be recorded.'
+                        }
+                    }
+                }
+                $script:childStartCount++
+            }
+        }
+        finally {
+            # Cleanup is recorded separately and never replaces the send result.
+            try {
+                if ($null -ne $pendingAck) { $pendingFixture.root_release_acknowledged = [bool]$pendingAck.WaitOne(0) }
+                if ($null -ne $pendingFixture.root_process) {
+                    $pendingFixture.root_exited = [bool]$pendingFixture.root_process.WaitForExit(5000)
+                    if ($pendingFixture.root_exited) { $pendingFixture.root_exit_code = [int]$pendingFixture.root_process.ExitCode }
+                }
+            }
+            catch {
+                if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName }
+            }
+            # A root still waiting is released so it ends on its own path.
+            try { if ($null -ne $pendingRelease -and -not $pendingFixture.released) { [void]$pendingRelease.Set() } }
+            catch { if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName } }
+            foreach ($pendingDisposable in @($pendingFixture.root_process, $pendingRelease, $pendingAck)) {
+                if ($null -ne $pendingDisposable) {
+                    try { $pendingDisposable.Dispose() }
+                    catch { if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName } }
+                }
+            }
+        }
+
         $recordedIds = @($script:LastObservedChildIds)
         $reapResult = $script:LastReapResult
+        $pendingWrite = $script:LastStdinWrite
         $confirmation = Test-RecordedChildGone -ProcessId $recordedIds -ReadByProcessId {
             param($id)
             @(Get-CimInstance -ClassName Win32_Process -Filter "ProcessId=$id" -ErrorAction Stop |
                 Where-Object { [string]$_.Name -like 'powershell*' })
         } -TimeoutMilliseconds 10000
+
+        $pendingOrderHeld = $pendingFixture.root_command_ready -and $pendingFixture.events_created -and
+            $pendingFixture.released -and $pendingFixture.child_pinned_at_release -and
+            ($pendingFixture.release_write_state -ceq 'PENDING') -and
+            ($null -eq $pendingFixture.provider_error_type) -and ($null -eq $pendingFixture.setup_error_type)
+        # A write timeout is not the early root exit this case is about.
+        $pendingSendFailedAtPipe = $sendCaught -and ($null -ne $pendingWrite) -and
+            ($pendingWrite.state -ceq 'FAILED') -and [bool]$pendingWrite.pending_observed -and
+            ($pendingWrite.exception_type -cne 'System.TimeoutException') -and
+            ($pendingWrite.inner_exception_type -ceq 'System.IO.IOException')
+        $pendingRootEnded = ($pendingFixture.root_exited -eq $true) -and ($pendingFixture.root_exit_code -eq 0) -and
+            [bool]$pendingFixture.root_release_acknowledged
         $script:stage = 'add/PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD'
         Add-Result 'PENDING_INPUT_EARLY_ROOT_EXIT_REAPS_PINNED_CHILD' (
-            $sendCaught -and $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
+            $pendingOrderHeld -and $pendingSendFailedAtPipe -and $pendingRootEnded -and
+            $recordedIds.Count -ge 1 -and $null -ne $reapResult -and
             [int]$reapResult.terminated -ge 1 -and [bool]$reapResult.gone -and
             [bool]$reapResult.verified -and (-not [bool]$script:LastReapFailed) -and
             [bool]$confirmation.verified -and [bool]$confirmation.gone) -Observed @{
-                send_failed = $sendCaught; recorded_children = $recordedIds.Count
+                fixture_root_command_ready = [bool]$pendingFixture.root_command_ready
+                fixture_events_created = [bool]$pendingFixture.events_created
+                fixture_setup_error_type = $pendingFixture.setup_error_type
+                provider_error_type = $pendingFixture.provider_error_type
+                cleanup_error_type = $pendingFixture.cleanup_error_type
+                released = [bool]$pendingFixture.released
+                child_pinned_at_release = [bool]$pendingFixture.child_pinned_at_release
+                pinned_count_at_release = [int]$pendingFixture.pinned_count_at_release
+                release_write_state = $pendingFixture.release_write_state
+                write_state = $(if ($null -eq $pendingWrite) { $null } else { [string]$pendingWrite.state })
+                write_state_before_failure = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.state_before_failure })
+                write_pending_observed = $(if ($null -eq $pendingWrite) { $false } else { [bool]$pendingWrite.pending_observed })
+                write_wait_iterations = $(if ($null -eq $pendingWrite) { $null } else { [int]$pendingWrite.wait_iterations })
+                write_exception_type = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.exception_type })
+                write_inner_exception_type = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.inner_exception_type })
+                write_inner_hresult = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.inner_hresult })
+                write_diagnostic_error_type = $(if ($null -eq $pendingWrite) { $null } else { $pendingWrite.diagnostic_error_type })
+                send_failed = $sendCaught
+                send_exception_type = $sendExceptionType
+                launch_stage_last = $(if ($null -eq $script:LastTestProcessStage) { $null } else { [string]$script:LastTestProcessStage })
+                launch_stage_at_failure = $pendingLaunch.stage_at_failure
+                launch_fqid = $pendingLaunch.fqid
+                launch_exception_hresult = $pendingLaunch.exception_hresult
+                launch_inner_exception_type = $pendingLaunch.inner_exception_type
+                launch_inner_hresult = $pendingLaunch.inner_hresult
+                launch_win32_native_error_code = $pendingLaunch.win32_native_error_code
+                launch_exception_chain = $pendingLaunch.exception_chain
+                launch_message_redacted = $pendingLaunch.message_redacted
+                launch_diagnostic_error_type = $pendingLaunch.diagnostic_error_type
+                root_handle_opened = [bool]$pendingFixture.root_handle_opened
+                root_exited = $pendingFixture.root_exited
+                root_exit_code = $pendingFixture.root_exit_code
+                root_release_acknowledged = [bool]$pendingFixture.root_release_acknowledged
+                recorded_children = $recordedIds.Count
+                recorded_child_ids = (@($recordedIds) -join ',')
+                reap_terminated = $(if ($null -eq $reapResult) { $null } else { [int]$reapResult.terminated })
+                reap_gone = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.gone })
                 reap_verified = $(if ($null -eq $reapResult) { $false } else { [bool]$reapResult.verified })
+                reap_identity_unconfirmed = $(if ($null -eq $reapResult) { $null } else { [int]$reapResult.identity_unconfirmed })
+                last_reap_failed = [bool]$script:LastReapFailed
                 confirmation_verified = [bool]$confirmation.verified
+                confirmation_gone = [bool]$confirmation.gone
             }
     }
     catch {
