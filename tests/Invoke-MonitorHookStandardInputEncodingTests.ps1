@@ -1335,9 +1335,12 @@ try {
             pinned_count_at_release = 0
             release_write_state = $null
             root_handle_opened = $false
+            root_handle_attempted = $false
+            root_handle_error_type = $null
             root_process = $null
             root_exited = $null
             root_exit_code = $null
+            root_exit_code_unavailable = $null
             root_release_acknowledged = $false
             provider_error_type = $null
             setup_error_type = $null
@@ -1393,6 +1396,19 @@ try {
         $pendingSnapshotProvider = {
             param($parentId)
             $snapshot = Get-ChildProcessSnapshot -ParentId $parentId
+            # Diagnostic only: hold the root's Process from the first snapshot so
+            # its exit code can be reported even when release never happens. A
+            # failure here is recorded on its own field and never decides the case.
+            if (-not $pendingFixture.root_handle_attempted) {
+                $pendingFixture.root_handle_attempted = $true
+                try {
+                    $pendingFixture.root_process = [System.Diagnostics.Process]::GetProcessById([int]$parentId)
+                    $pendingFixture.root_handle_opened = $true
+                }
+                catch {
+                    $pendingFixture.root_handle_error_type = $_.Exception.GetType().FullName
+                }
+            }
             try {
                 if ($null -ne $snapshot) {
                     $itemCount = @($snapshot.items).Count
@@ -1400,7 +1416,9 @@ try {
                 }
                 $writeState = if ($null -ne $script:LastStdinWrite) { [string]$script:LastStdinWrite.state } else { $null }
                 if ((-not $pendingFixture.released) -and ($pendingFixture.pinned_seen_count -ge 1) -and ($writeState -ceq 'PENDING')) {
-                    $pendingFixture.root_process = [System.Diagnostics.Process]::GetProcessById([int]$parentId)
+                    if ($null -eq $pendingFixture.root_process) {
+                        $pendingFixture.root_process = [System.Diagnostics.Process]::GetProcessById([int]$parentId)
+                    }
                     $pendingFixture.root_handle_opened = $true
                     $pendingFixture.child_pinned_at_release = $true
                     $pendingFixture.pinned_count_at_release = $pendingFixture.pinned_seen_count
@@ -1479,8 +1497,16 @@ try {
                 if ($null -ne $pendingAck) { $pendingFixture.root_release_acknowledged = [bool]$pendingAck.WaitOne(0) }
                 if ($null -ne $pendingFixture.root_process) {
                     $pendingFixture.root_exited = [bool]$pendingFixture.root_process.WaitForExit(5000)
-                    if ($pendingFixture.root_exited) { $pendingFixture.root_exit_code = [int]$pendingFixture.root_process.ExitCode }
+                    if ($pendingFixture.root_exited) {
+                        try { $pendingFixture.root_exit_code = [int]$pendingFixture.root_process.ExitCode }
+                        catch {
+                            $pendingFixture.root_exit_code_unavailable = 'EXIT_CODE_READ_FAILED'
+                            throw
+                        }
+                    }
+                    else { $pendingFixture.root_exit_code_unavailable = 'ROOT_NOT_EXITED_WITHIN_5000MS' }
                 }
+                else { $pendingFixture.root_exit_code_unavailable = 'NO_ROOT_HANDLE' }
             }
             catch {
                 if ($null -eq $pendingFixture.cleanup_error_type) { $pendingFixture.cleanup_error_type = $_.Exception.GetType().FullName }
@@ -1553,8 +1579,10 @@ try {
                 launch_message_redacted = $pendingLaunch.message_redacted
                 launch_diagnostic_error_type = $pendingLaunch.diagnostic_error_type
                 root_handle_opened = [bool]$pendingFixture.root_handle_opened
+                root_handle_error_type = $pendingFixture.root_handle_error_type
                 root_exited = $pendingFixture.root_exited
                 root_exit_code = $pendingFixture.root_exit_code
+                root_exit_code_unavailable = $pendingFixture.root_exit_code_unavailable
                 root_release_acknowledged = [bool]$pendingFixture.root_release_acknowledged
                 recorded_children = $recordedIds.Count
                 recorded_child_ids = (@($recordedIds) -join ',')
